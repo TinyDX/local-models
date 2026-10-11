@@ -13,7 +13,7 @@ internal static class AppInfo
 {
     /// 程序版本。安装器会把它写进注册表的 DisplayVersion，
     /// 启动器会把它显示在「设置 → 关于 → 版本号」。
-    public const string Version = "0.3.5beta";
+    public const string Version = "0.3.6beta";
 
     /// 产品名（注册表项名、窗口标题都用它）
     public const string Product = "Local Models";

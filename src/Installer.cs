@@ -1293,7 +1293,11 @@ internal sealed class InstallerForm : Form
                 {
                     _dlInfo.ForeColor = P.Red;
                     _dlInfo.Text = "下载失败：" + r.Error;
+                    _dlSpeed.Text = "可换源或手动下载";
                     Log("引擎包下载失败：" + r.Error);
+                    // 给出去哪儿手动下的提示 —— 全自动失败时用户至少知道下一步干什么
+                    Log("  手动下载地址：" + EngineKit.KitReleaseUrl());
+                    Log("  下好后用上面的「手动选择本地文件」指过去即可。");
                 }
             }));
         }));
