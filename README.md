@@ -6,6 +6,9 @@
 
 当前版本：**0.3.5beta**
 
+> **遇到问题或有建议？欢迎加 QQ 群 `373392086` 反馈。**
+> 群里有其他用户在跑不同的显卡和模型，装不上、跑不动、报错都可以直接在群里问。
+
 ---
 
 ## 界面截图
@@ -97,11 +100,24 @@ models\bonsai2_27b_ternary_ptq1_native_mtp.ninfer
 
 ### 1. 下载
 
-到 [Releases](../../releases) 页面下载最新的引擎包，解压到任意位置。
+到 [Releases](https://github.com/TinyDX/local-models/releases) 页面下载 **`Bonsai2-Setup.exe`**（约 100 KB）。
+
+**不用再单独下引擎包** —— 安装程序会识别你的显卡架构，自动下载对应的那一个。
+所以 RTX 50 系的用户只需要下 1.26 GB，而不是把三个架构的 4.2 GB 全下来。
+
+> 如果 GitHub 下载太慢，安装向导的「引擎包」页里有下载源选择，可以换镜像，
+> 也可以「手动选择本地文件」——自己用别的工具下好再指过去。
 
 ### 2. 安装
 
-双击 `Bonsai2-Setup.exe`，跟着向导走 6 步。
+双击 `Bonsai2-Setup.exe`，跟着向导走 7 步：
+
+```
+欢迎 → 许可 → 硬件检查 → 安装选项 → 引擎包 → 安装中 → 完成
+```
+
+「引擎包」那一步会显示检测到的显卡和要下载的文件，点「下载」即可。
+支持断点续传 —— 中途断了再点一次会接着下，不用从头来。
 
 默认安装到 `C:\Program Files\Local Models`（本程序是 64 位应用，引擎是原生 x64，所以用 64 位的 Program Files，不是 `Program Files (x86)`）。在「浏览…」里选的目录会自动补一层 `\Local Models`。
 
@@ -110,6 +126,11 @@ models\bonsai2_27b_ternary_ptq1_native_mtp.ninfer
 ```powershell
 & 'Bonsai2-Setup.exe' /silent /dir "D:\某个目录"
 ```
+
+> 静默模式需要一个已经下好的引擎包。用 `/kit "<路径>"` 指定：
+> ```powershell
+> & 'Bonsai2-Setup.exe' /silent /dir "D:\某个目录" /kit "D:\下载\infer-engine-sm120a-20261002.zip"
+> ```
 
 ### 3. 放模型
 
@@ -310,6 +331,17 @@ netsh http show urlacl | Select-String 8096
 
 **只替换程序文件**，`models\`、`engine\`、`licenses\`、各种 `.json` 配置和对话历史一律不动。
 
+### 还是搞不定怎么办？
+
+上面没覆盖到的问题，直接加 QQ 群 **`373392086`** 问。
+
+反馈时最好带上这几样，能省很多来回：
+
+- 显卡型号和显存（`nvidia-smi` 的输出）
+- 用的是哪个包（`infer-engine-sm120a` / `sm89` / `sm86`）
+- 程序里「控制模型」页的日志，或者安装目录下的 `engine.log`
+- 具体报错内容（截图或文字都行）
+
 ---
 
 ## 许可证与致谢
@@ -363,6 +395,7 @@ netsh http show urlacl | Select-String 8096
 
 ## 相关文档
 
-- [更新日志](更新日志.txt) —— 各版本的新增、修改与修复
+- [更新日志](docs/更新日志.txt) —— 各版本的新增、修改与修复
+- [构建与打包](docs/构建与打包.md) —— 目录结构、编译命令、设计要点
 - [NOTICE](NOTICE) —— Apache-2.0 要求的署名与改动声明
 - 安装目录 `licenses\` —— 第三方许可证原文

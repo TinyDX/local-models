@@ -1504,14 +1504,19 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        // 静默安装：Bonsai2-Setup.exe /silent ["目标目录"]
+        // 静默安装：Bonsai2-Setup.exe /silent [/dir "目标目录"] [/kit "引擎包.zip"]
         // 用于批量部署与自动验证，不弹任何界面。
+        //
+        // /kit 指向已经下好的引擎包。新的分发方式里安装器只带程序本体，
+        // 引擎要另外拿 —— 静默模式下没法弹下载界面，所以必须指定。
         bool silent = false;
         string target = "";
+        string kitPath = "";
         for (int i = 0; i < args.Length; i++)
         {
             if (args[i] == "/silent" || args[i] == "--silent") silent = true;
             else if (args[i] == "/dir" && i + 1 < args.Length) { target = args[i + 1]; i++; }
+            else if (args[i] == "/kit" && i + 1 < args.Length) { kitPath = args[i + 1]; i++; }
         }
 
         if (silent)
@@ -1549,7 +1554,24 @@ internal static class Program
             string exeDir = Path.GetDirectoryName(System.Windows.Forms.Application.ExecutablePath);
             string payload = Path.Combine(exeDir, "payload");
 
-            bool ok = InstallCore.Run(payload, ctx, new Action<string>(Console.WriteLine));
+            // 指定了引擎包就走「分离」模式，否则退回老的整体 payload
+            if (kitPath.Length > 0)
+            {
+                if (!File.Exists(kitPath))
+                {
+                    Console.WriteLine("找不到引擎包：" + kitPath);
+                    Environment.ExitCode = 5;
+                    return;
+                }
+                ctx.KitLocalPath = kitPath;
+                ctx.KitArch = EngineKit.ArchTag(gpu.ArchKey);
+                ctx.KitFile = EngineKit.KitFileName(gpu.ArchKey);
+            }
+
+            Action<string> log = new Action<string>(Console.WriteLine);
+            bool ok = kitPath.Length > 0
+                ? InstallCore.RunWithKit(payload, ctx, log)
+                : InstallCore.Run(payload, ctx, log);
             Environment.ExitCode = ok ? 0 : 1;
             return;
         }
