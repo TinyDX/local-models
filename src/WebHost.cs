@@ -1,7 +1,7 @@
 // WebHost.cs -- 内置网页服务（替代 node + webui-server.js）
 //
 // 集成动机：原版靠外部的 node.exe + webui-server.js 提供网页。
-//   其中 node.exe 的路径写死在 C:\Users\Administrator\.dsh\... ，
+//   其中 node.exe 的路径是写死的绝对路径，
 //   换一台电脑这个路径就不存在 —— 这是分发时最大的障碍。
 //   这里用 .NET 自带的 HttpListener 完全替代，功能等价：
 //     · 静态页（index.html 编译进 exe，作为嵌入资源）

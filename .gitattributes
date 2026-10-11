@@ -1,2 +1,35 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# 换行符统一用 LF。
+#
+# 为什么不用 `* text=auto`：
+#   那会让 Git 按平台转换 —— 在 Windows 上检出成 CRLF、提交时再转回 LF。
+#   结果是「本地看到的文件」和「仓库里存的文件」不一致，
+#   每次改动都可能出现"整个文件都变了"的假 diff，很难看出真正改了什么。
+#
+# 这个项目的源码在 Windows 上用 csc 编译，CRLF / LF 都能编译，
+# 所以统一用 LF 最省事 —— 跨平台一致，diff 干净。
+
+* text=auto eol=lf
+
+# 明确按文本处理（这些都要走 LF 归一化）
+*.cs        text eol=lf
+*.ps1       text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+*.html      text eol=lf
+*.json      text eol=lf
+*.xml       text eol=lf
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
+# 二进制文件：不要碰
+*.ico       binary
+*.png       binary
+*.jpg       binary
+*.zip       binary
+*.exe       binary
+*.dll       binary
+*.ninfer    binary
+
+# 语言统计：让 GitHub 不要把网页当成主语言
+*.html      linguist-vendored=false
+licenses/*  linguist-vendored
