@@ -517,9 +517,49 @@ internal sealed class InstallerForm : Form
 
     /// 右侧蓝色按钮。
     /// 完成页上它是「完成并启动」—— 关掉安装器并拉起程序。
+    ///
+    /// 引擎包页（第 4 步）上它先**触发下载**，下完才进安装页 ——
+    /// 不让用户先点「下载」再点「下一步」，少一步操作。
     private void NavNext()
     {
         if (_step == 6) { FinishAndLaunch(); return; }
+
+        if (_step == 4)
+        {
+            // 下载中 → 这个按钮变成「取消」
+            if (_downloading)
+            {
+                if (_dlCancel != null) _dlCancel.Set();
+                _dlInfo.Text = "正在取消…";
+                return;
+            }
+            // 手动模式：文件齐了就放行，检查交给安装步骤
+            bool manual = (_rbManual != null && _rbManual.Checked);
+            if (manual)
+            {
+                string p = _kitPath != null ? _kitPath.Text.Trim() : "";
+                long b;
+                if (!EngineKit.LooksLikeKit(p, out b))
+                {
+                    _dlInfo.ForeColor = P.Red;
+                    _dlInfo.Text = "请先选择一个有效的引擎包（1 GB 以上的 zip）";
+                    return;
+                }
+                Ctx.KitLocalPath = p;
+                Go(1);
+                return;
+            }
+            // 已经有下好的包（自动找到的或之前下完的）→ 直接走
+            if (Ctx.KitLocalPath.Length > 0 && File.Exists(Ctx.KitLocalPath))
+            {
+                Go(1);
+                return;
+            }
+            // 否则开始下载，下完自动进下一页
+            StartDownload(true);
+            return;
+        }
+
         Go(1);
     }
 
@@ -940,7 +980,6 @@ internal sealed class InstallerForm : Form
     private Button _kitBrowse;
     private ProgressBar _dlBar;
     private Label _dlInfo, _dlSpeed, _srcNote;
-    private Button _dlStart;
     private ManualResetEvent _dlCancel;
     private bool _downloading;
     private string _kitLocal = "";
@@ -968,14 +1007,23 @@ internal sealed class InstallerForm : Form
         Ctx.KitArch = tag;
 
         string sizeHint = (arch == "12.0") ? "1.26" : ((arch == "8.9") ? "1.44" : "1.46");
-        var info = Para(
-            "检测到显卡：" + Ctx.Gpu.Name + "\r\n" +
-            "架构：" + EngineKit.ArchName(arch) + "\r\n" +
-            "需要下载：" + kitName + "（约 " + sizeHint + " GB）\r\n" +
-            "安装器只带程序本体，引擎按显卡单独下载 —— 不用下另外两个架构的 2.8 GB。");
-        info.Height = Sx(96);
-        info.Dock = DockStyle.None;
-        info.Top = Sx(46);
+        // ★ 文字要短 —— 窗口宽度有限，太长会撑出横向滚动条。
+        //   详细说明留在日志里，界面上只给关键信息。
+        var info = new Label
+        {
+            Text = "显卡：" + Ctx.Gpu.Name + "\r\n" +
+                   "架构：" + EngineKit.ArchName(arch) + "\r\n" +
+                   "要下载：" + kitName + "（约 " + sizeHint + " GB）",
+            AutoSize = false,
+            Dock = DockStyle.None,
+            Left = 0,
+            Top = Sx(46),
+            Width = Sx(620),
+            Height = Sx(72),
+            Font = FontOf(10f, FontStyle.Regular),
+            ForeColor = P.Fg,
+            BackColor = P.Bg
+        };
 
         _body.Controls.Add(info);
         _body.Controls.Add(Head("引擎包 · " + EngineKit.ArchName(arch)));
@@ -1011,7 +1059,7 @@ internal sealed class InstallerForm : Form
         _sources = EngineKit.DefaultSources(Ctx.Version);
         _srcBox = new ComboBox
         {
-            Left = Sx(96), Top = y - Sx(2), Width = Sx(280),
+            Left = Sx(96), Top = y - Sx(2), Width = Sx(200),
             DropDownStyle = ComboBoxStyle.DropDownList,
             Font = FontOf(10f, FontStyle.Regular),
             BackColor = P.Card, ForeColor = P.Fg, FlatStyle = FlatStyle.Flat
@@ -1027,79 +1075,81 @@ internal sealed class InstallerForm : Form
 
         _srcNote = new Label
         {
-            Text = _sources[0].Note, Left = Sx(386), Top = y, Width = Sx(220), Height = Sx(24),
+            Text = _sources[0].Note, Left = Sx(306), Top = y, Width = Sx(160), Height = Sx(22),
             Font = FontOf(9f, FontStyle.Regular), ForeColor = P.Dim, BackColor = P.Bg
         };
         _body.Controls.Add(_srcNote);
 
         var btnProbe = MkBtn("测速", delegate { ProbeSources(); });
-        btnProbe.Left = Sx(612); btnProbe.Top = y - Sx(6);
-        btnProbe.Width = Sx(76);
+        btnProbe.Left = Sx(478); btnProbe.Top = y - Sx(6);
+        btnProbe.Width = Sx(64);
         _body.Controls.Add(btnProbe);
         y += Sx(38);
 
         _kitPath = new TextBox
         {
-            Text = _kitLocal, Left = Sx(24), Top = y, Width = Sx(560), Height = Sx(28),
+            Text = _kitLocal, Left = Sx(24), Top = y, Width = Sx(440), Height = Sx(26),
             Font = FontOf(10f, FontStyle.Regular),
             BackColor = P.Card, ForeColor = P.Fg, BorderStyle = BorderStyle.FixedSingle
         };
         _body.Controls.Add(_kitPath);
 
         _kitBrowse = MkBtn("浏览…", delegate { PickKitFile(); });
-        _kitBrowse.Left = Sx(592); _kitBrowse.Top = y - Sx(4);
-        _kitBrowse.Width = Sx(96);
+        _kitBrowse.Left = Sx(472); _kitBrowse.Top = y - Sx(4);
+        _kitBrowse.Width = Sx(70);
         _body.Controls.Add(_kitBrowse);
         y += Sx(40);
 
         _dlBar = new ProgressBar
         {
-            Left = Sx(24), Top = y, Width = Sx(664), Height = Sx(20),
+            Left = Sx(24), Top = y, Width = Sx(518), Height = Sx(20),
             Style = ProgressBarStyle.Continuous
         };
         _body.Controls.Add(_dlBar);
         y += Sx(26);
 
+        // 底部两个标签**按进度条宽度摆**，不按窗口宽度算 ——
+        // 按窗口算会跟滚动条较劲（滚动条占宽 → 内容更宽 → 又出滚动条，死循环）。
+        // 进度条右端在 614px，速度标签就贴那里。
         _dlInfo = new Label
         {
-            Text = "", Left = Sx(24), Top = y, Width = Sx(430), Height = Sx(24),
-            Font = FontOf(9.5f, FontStyle.Regular), ForeColor = P.Dim, BackColor = P.Bg
+            Text = "", Left = Sx(24), Top = y, Width = Sx(420), Height = Sx(22),
+            Font = FontOf(9.5f, FontStyle.Regular), ForeColor = P.Dim, BackColor = P.Bg,
+            AutoEllipsis = false
         };
         _body.Controls.Add(_dlInfo);
 
         _dlSpeed = new Label
         {
-            Text = "", Left = Sx(460), Top = y, Width = Sx(228), Height = Sx(24),
+            Text = "", Left = Sx(402), Top = y, Width = Sx(140), Height = Sx(22),
             Font = FontOf(9.5f, FontStyle.Regular), ForeColor = P.Accent, BackColor = P.Bg,
             TextAlign = ContentAlignment.MiddleRight
         };
         _body.Controls.Add(_dlSpeed);
 
-        _dlStart = MkBtn("下载", delegate { StartDownload(); });
-        _dlStart.Left = Sx(592); _dlStart.Top = y + Sx(30); _dlStart.Width = Sx(96);
-        _body.Controls.Add(_dlStart);
+        // ★ 这里**不放**独立的「下载」按钮。
+        //   下载由「下一步」触发 —— 用户不必先点一次下载、再点一次下一步。
+        //   点了下一步之后按钮变成「取消」，下完自动进安装页。
 
         SyncKitMode();
         UpdateNav(4, true, "下一步");
 
         if (_kitLocal.Length > 0)
-            _dlInfo.Text = "已在本机找到：" + Path.GetFileName(_kitLocal);
+            _dlInfo.Text = "已在本机找到：" + Path.GetFileName(_kitLocal) + "，点「下一步」继续";
         else if (searched.Length > 0)
-            _dlInfo.Text = "本机未找到引擎包（找过：" + searched.TrimEnd(' ', ';') + "）";
+            _dlInfo.Text = "本机未找到引擎包（找过：" + searched.TrimEnd(' ', ';') + "），点「下一步」开始下载";
     }
 
     private void SyncKitMode()
     {
         bool manual = (_rbManual != null && _rbManual.Checked);
-        if (_srcBox != null) _srcBox.Enabled = !manual;
+        if (_srcBox != null) _srcBox.Enabled = !manual && !_downloading;
         if (_kitPath != null) _kitPath.Enabled = manual;
         if (_kitBrowse != null) _kitBrowse.Enabled = manual;
         if (_dlBar != null) _dlBar.Enabled = !manual;
-        if (_dlStart != null)
-        {
-            _dlStart.Enabled = !manual && !_downloading;
-            _dlStart.Text = manual ? "已选文件" : (_downloading ? "取消" : "下载");
-        }
+        // 「下一步」的文案随模式与下载状态变
+        if (_next != null && !_downloading)
+            _next.Text = manual ? "下一步（用所选文件）" : "下一步（开始下载）";
         Ctx.UseManualKit = manual;
         if (manual && _kitPath != null)
             Ctx.KitLocalPath = _kitPath.Text.Trim();
@@ -1208,7 +1258,9 @@ internal sealed class InstallerForm : Form
         }
     }
 
-    private void StartDownload()
+    /// 开始下载引擎包。
+    /// autoAdvance = true 时下完自动进「安装」页（由「下一步」触发的情形）。
+    private void StartDownload(bool autoAdvance)
     {
         if (_downloading)
         {
@@ -1238,11 +1290,14 @@ internal sealed class InstallerForm : Form
 
         _downloading = true;
         _dlCancel = new ManualResetEvent(false);
-        _dlStart.Text = "取消";
         _dlBar.Value = 0;
         _dlInfo.ForeColor = P.Dim;
         _dlInfo.Text = "正在下载：" + Path.GetFileName(dest);
         _dlSpeed.Text = "";
+        // 下载期间「下一步」变「取消」，「上一步」禁用 —— 免得半路跑掉
+        _next.Text = "取消";
+        _back.Enabled = false;
+        _cancel.Enabled = false;
 
         var th = new System.Threading.Thread(new System.Threading.ThreadStart(delegate
         {
@@ -1253,11 +1308,19 @@ internal sealed class InstallerForm : Form
                     {
                         try
                         {
+                            // done < 0 → 下载器在自动重试。告诉用户一声，别让他以为卡死了。
+                            if (done < 0)
+                            {
+                                _dlInfo.ForeColor = P.Amber;
+                                _dlInfo.Text = "连接中断，正在自动重试（已下载的部分会保留）…";
+                                return;
+                            }
                             if (total > 0)
                             {
                                 int pct = (int)(done * 100 / total);
                                 if (pct > 100) pct = 100;
                                 _dlBar.Value = pct;
+                                _dlInfo.ForeColor = P.Dim;
                                 _dlInfo.Text = "已下载 " + EngineDownload.Human(done) + " / "
                                              + EngineDownload.Human(total) + "  (" + pct + "%)";
                             }
@@ -1271,9 +1334,10 @@ internal sealed class InstallerForm : Form
             BeginInvoke(new Action(delegate
             {
                 _downloading = false;
-                _dlStart.Text = "下载";
-                _dlStart.Enabled = true;
                 _srcBox.Enabled = true;
+                _next.Text = "下一步";
+                _back.Enabled = true;
+                _cancel.Enabled = true;
 
                 if (r.Ok)
                 {
@@ -1284,10 +1348,12 @@ internal sealed class InstallerForm : Form
                     _dlInfo.Text = "下载完成：" + Path.GetFileName(dest);
                     _dlSpeed.Text = EngineDownload.Human(r.Bytes);
                     Log("引擎包下载完成：" + dest);
+                    // 由「下一步」触发的下载 → 下完直接进安装页，不用再点一次
+                    if (autoAdvance) { Go(1); return; }
                 }
                 else if (r.Cancelled)
                 {
-                    _dlInfo.Text = "已取消。已下载的部分保留着，再点「下载」会接着下。";
+                    _dlInfo.Text = "已取消。已下载的部分保留着，再点「下一步」会接着下。";
                 }
                 else
                 {

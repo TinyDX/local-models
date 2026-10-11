@@ -131,6 +131,7 @@ internal static class EngineKit
     {
         s.Ms = -1; s.Ok = false;
         if (s.Prefix.Length == 0) return;      // 「自定义」不探测
+        EngineDownload.EnsureTls();            // 不设 TLS 会握手失败
         try
         {
             var req = (HttpWebRequest)WebRequest.Create(s.UrlFor(file));
