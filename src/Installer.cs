@@ -1443,23 +1443,49 @@ internal sealed class InstallerForm : Form
         t.IsBackground = true;
         t.Start();
     }
-    /// 安装：内嵌 payload（程序本体）+ 引擎包 zip（大块头）。
+    /// 安装：程序本体（内嵌在 exe 里）+ 引擎包 zip（用户下的）。
     ///
-    /// 两种情况：
-    ///   · 老的「一体化」包：exe 旁边有 payload\ 目录，里面连着引擎 —— 照旧走 Run
-    ///   · 新的「分离」包：exe 旁边只有程序文件，引擎在用户下载的 zip 里 —— 走 RunWithKit
+    /// 三种情况：
+    ///   · 内嵌模式（正式分发）：exe 里编着程序本体，解到临时目录再用
+    ///   · 开发时：exe 旁边的 payload\ 目录里有程序本体
     ///
-    /// 这样同一个安装器两种发布方式都能用，不用维护两份代码。
+    /// 引擎永远来自 zip（按显卡下载），不内嵌。
     private bool DoInstall()
     {
         string exeDir = Path.GetDirectoryName(Application.ExecutablePath);
         string src = Path.Combine(exeDir, "payload");
+        string tmp = null;
 
-        // 有引擎包就用分离模式；没有就退回老的整包模式
+        // 优先用内嵌资源 —— 用户从网络下载时，exe 旁边什么都不会有
+        if (InstallCore.EmbeddedCount() > 0)
+        {
+            try
+            {
+                tmp = InstallCore.ExtractEmbeddedPayload(new Action<string>(Log));
+                src = tmp;
+            }
+            catch (Exception ex)
+            {
+                Log("❌ 释放内嵌文件失败：" + ex.Message);
+                return false;
+            }
+        }
+        else if (!Directory.Exists(src))
+        {
+            Log("❌ 安装包不完整：既没有内嵌文件，也没有 payload 目录。");
+            return false;
+        }
+
         bool hasKit = !string.IsNullOrEmpty(Ctx.KitLocalPath) && File.Exists(Ctx.KitLocalPath);
-        if (hasKit)
-            return InstallCore.RunWithKit(src, Ctx, new Action<string>(Log));
-        return InstallCore.Run(src, Ctx, new Action<string>(Log));
+        try
+        {
+            if (hasKit) return InstallCore.RunWithKit(src, Ctx, new Action<string>(Log));
+            return InstallCore.Run(src, Ctx, new Action<string>(Log));
+        }
+        finally
+        {
+            InstallCore.CleanupTemp(tmp);
+        }
     }
 
     // ---------- 步骤 6 ----------
@@ -1622,7 +1648,6 @@ internal static class Program
                     Environment.SpecialFolder.ProgramFiles), "Local Models");
 
             string exeDir = Path.GetDirectoryName(System.Windows.Forms.Application.ExecutablePath);
-            string payload = Path.Combine(exeDir, "payload");
 
             // 指定了引擎包就走「分离」模式，否则退回老的整体 payload
             if (kitPath.Length > 0)
@@ -1639,9 +1664,36 @@ internal static class Program
             }
 
             Action<string> log = new Action<string>(Console.WriteLine);
-            bool ok = kitPath.Length > 0
-                ? InstallCore.RunWithKit(payload, ctx, log)
-                : InstallCore.Run(payload, ctx, log);
+            string payload = Path.Combine(exeDir, "payload");
+            string tmp = null;
+
+            // 和界面模式一样：优先用内嵌资源（正式分发时 exe 旁边什么都没有）
+            if (InstallCore.EmbeddedCount() > 0)
+            {
+                try
+                {
+                    tmp = InstallCore.ExtractEmbeddedPayload(log);
+                    payload = tmp;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("释放内嵌文件失败：" + ex.Message);
+                    Environment.ExitCode = 6;
+                    return;
+                }
+            }
+
+            bool ok;
+            try
+            {
+                ok = kitPath.Length > 0
+                    ? InstallCore.RunWithKit(payload, ctx, log)
+                    : InstallCore.Run(payload, ctx, log);
+            }
+            finally
+            {
+                InstallCore.CleanupTemp(tmp);
+            }
             Environment.ExitCode = ok ? 0 : 1;
             return;
         }

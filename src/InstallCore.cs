@@ -17,6 +17,86 @@ using Microsoft.Win32;
 
 internal static class InstallCore
 {
+    /// exe 里编进了几个程序本体文件（0 = 没编，走外部 payload 目录的老路子）
+    public static int EmbeddedCount()
+    {
+        try
+        {
+            int n = 0;
+            foreach (string s in System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceNames())
+                if (s.StartsWith("p.", StringComparison.Ordinal)) n++;
+            return n;
+        }
+        catch { return 0; }
+    }
+
+    /// 把内嵌在 exe 里的程序本体释放到临时目录，返回该目录。
+    ///
+    /// 为什么要内嵌：新的分发方式里，用户从 GitHub 只下载一个安装器 exe。
+    ///   程序本体（启动器、网页、许可，约 0.4 MB）如果放在 exe 旁边的 payload\ 目录，
+    ///   用户根本拿不到 —— 他只下了一个文件。
+    ///   所以直接编进 exe，运行时解到临时目录再用。
+    ///
+    /// 引擎不内嵌（4.2 GB），按显卡单独下载。
+    public static string ExtractEmbeddedPayload(Action<string> log)
+    {
+        string tmp = Path.Combine(Path.GetTempPath(),
+            "LocalModelsSetup-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+        Directory.CreateDirectory(tmp);
+
+        var asm = System.Reflection.Assembly.GetExecutingAssembly();
+        string[] names = asm.GetManifestResourceNames();
+        int n = 0;
+
+        foreach (string res in names)
+        {
+            // 资源名形如 "p.<扁平化路径>" —— 见打包脚本里的命名规则。
+            // 我们只取以 "p." 开头的（其余是图标、网页等其它资源）。
+            if (!res.StartsWith("p.", StringComparison.Ordinal)) continue;
+
+            string rel = ResourceToPath(res.Substring(2));
+            if (rel.Length == 0) continue;
+
+            string dst = Path.Combine(tmp, rel);
+            string dd = Path.GetDirectoryName(dst);
+            if (!string.IsNullOrEmpty(dd)) Directory.CreateDirectory(dd);
+
+            using (Stream s = asm.GetManifestResourceStream(res))
+            {
+                if (s == null) continue;
+                using (var o = File.Create(dst)) s.CopyTo(o);
+            }
+            n++;
+        }
+
+        if (log != null) log("  已从安装程序释放 " + n + " 个文件");
+        return tmp;
+    }
+
+    /// 把扁平化的资源名还原成相对路径。
+    ///
+    /// 打包时用 "__" 代替路径分隔符（资源名里不能带反斜杠），
+    /// 文件名本身保持原样（含空格和中文，.NET 资源名支持）。
+    ///   webui__index.html              → webui\index.html
+    ///   licenses__MIT-fmt-bundled.txt  → licenses\MIT-fmt-bundled.txt
+    ///   Local Models.exe               → Local Models.exe
+    private static string ResourceToPath(string flat)
+    {
+        if (string.IsNullOrEmpty(flat)) return "";
+        // 从后往前找第一个 "__"，它就是最后一层目录的分隔
+        int i = flat.LastIndexOf("__", StringComparison.Ordinal);
+        if (i > 0)
+            return flat.Substring(0, i).Replace("__", "\\") + "\\" + flat.Substring(i + 2);
+        return flat;
+    }
+
+    /// 用完就删掉临时目录。删不掉也不影响 —— 下次装会建新的。
+    public static void CleanupTemp(string dir)
+    {
+        try { if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) Directory.Delete(dir, true); }
+        catch { }
+    }
+
     /// 从「内嵌程序文件 + 下载的引擎包 zip」安装。
     ///
     /// 为什么分成两个来源：
