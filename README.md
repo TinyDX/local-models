@@ -10,7 +10,17 @@
 
 ## 界面截图
 
-![界面](docs/screenshot.png)
+**详细信息** —— 载入模型后一眼看清用的是哪个引擎、KV 池多大、上下文能到多长：
+
+![详细信息](docs/screenshot-1-detail.png)
+
+**控制模型** —— 一键载入 / 卸载，右侧是实时运行日志：
+
+![控制模型](docs/screenshot-2-run.png)
+
+**设置 · 关于** —— 版本号、引擎来源、第三方许可与声明：
+
+![关于](docs/screenshot-3-about.png)
 
 ---
 
