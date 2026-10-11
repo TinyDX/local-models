@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NInfer · bonsai2-27b (PTQ1_0)</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e222d; --line:#2a2f3d;
+    --fg:#e6e8ee; --dim:#98a0b3; --accent:#4f8cff; --accent2:#2f6fe0;
+    --user:#24406e; --ok:#38d39f; --err:#ff6b6b;
+    /* 滚动条配色：轨道比底色略深、滑块比轨道亮一档 */
+    --sb-track:#11141b; --sb-thumb:#333a4a; --sb-thumb-hover:#465066;
+    color-scheme: dark;      /* ★ 让浏览器知道这是深色页面 ——
+                              原生控件（滚动条、下拉箭头、输入框光标）
+                              会跟着用深色，否则一律浅色很刺眼 */
+  }
+
+  /* ============ 滚动条改成深色 ============ */
+  /* Firefox / 新版 Chromium 走标准属性 */
+  *{
+    scrollbar-width: thin;
+    scrollbar-color: var(--sb-thumb) var(--sb-track);
+  }
+  /* Chromium / Edge / Safari 走 ::-webkit-scrollbar */
+  ::-webkit-scrollbar{width:12px;height:12px}
+  ::-webkit-scrollbar-track{background:var(--sb-track)}
+  ::-webkit-scrollbar-thumb{
+    background:var(--sb-thumb);
+    border-radius:8px;
+    /* 用透明边框做出"滑块比轨道窄"的效果，不用再套一层容器 */
+    border:3px solid var(--sb-track);
+  }
+  ::-webkit-scrollbar-thumb:hover{background:var(--sb-thumb-hover)}
+  ::-webkit-scrollbar-corner{background:var(--sb-track)}
+  /* 滚动条两端的箭头按钮（Chromium 会画，很丑，直接藏掉） */
+  ::-webkit-scrollbar-button{display:none;width:0;height:0}
+
+  /* 文本框/下拉框也统一到深色，避免个别地方蹦出白底 */
+  textarea, input, select{color-scheme: dark}
+  ::selection{background:#2f6fe0; color:#fff}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--bg); color:var(--fg);
+    font:14px/1.6 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    display:flex; flex-direction:column;
+  }
+  header{
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line);
+    position:relative; z-index:30;   /* 悬停提示要盖在消息区上面 */
+  }
+  header h1{font-size:15px; margin:0; font-weight:600; letter-spacing:.3px}
+  .tag{font-size:12px; color:var(--dim); background:var(--panel2); border:1px solid var(--line);
+       padding:2px 8px; border-radius:999px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block;margin-right:5px}
+  .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .dot.off{background:var(--err)}
+  header .spacer{flex:1}
+  label.f{font-size:12px;color:var(--dim);display:flex;align-items:center;gap:6px}
+  input.f{width:74px;background:var(--bg);border:1px solid var(--line);color:var(--fg);
+          border-radius:6px;padding:4px 6px;font-size:12px}
+  select.f{background:var(--bg);border:1px solid var(--line);color:var(--fg);
+           border-radius:6px;padding:4px 6px;font-size:12px}
+  label.f.on{color:var(--accent);font-weight:600}
+  input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
+  /* 思考块：默认折叠成一行，点一下展开 */
+  .think{border:1px solid var(--line);border-left:3px solid #8b6cff;border-radius:8px;
+         background:#151824;margin-bottom:8px;overflow:hidden}
+  .think summary{cursor:pointer;padding:6px 10px;font-size:12px;color:#b9a8ff;
+                 list-style:none;user-select:none}
+  .think summary::-webkit-details-marker{display:none}
+  .think summary::before{content:'▸ ';}
+  .think[open] summary::before{content:'▾ ';}
+  .think .tc{padding:2px 11px 10px;white-space:pre-wrap;word-break:break-word;
+             color:#9aa3b8;font-size:13px;max-height:340px;overflow:auto}
+  /* main 只负责滚动，横向留白交给 .wrap 统一控制 ——
+     两处都加 padding 会让气泡变窄、而且被滚动条挤得左右不对称。 */
+  main{flex:1; overflow-y:auto; padding:20px 0 8px}
+  /* scrollbar-gutter 给滚动条预留固定宽度：
+     有没有滚动条时气泡宽度都一样，不会一出现滚动条整页就跳一下 */
+  main{scrollbar-gutter:stable}
+  /* .wrap 留出两侧放头像的空间，气泡本身占满整宽 ——
+     这样所有气泡的左右边缘都落在同两条竖直线上。
+     头像用绝对定位挂在行的外侧，**不参与横向布局**，
+     否则它会把气泡挤偏，两行就对不齐了。 */
+  .wrap{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:14px;
+        padding:0 44px}                       /* 左右各留 34px 头像位 + 10px 间距 */
+  .msg{position:relative; width:100%}
+  .msg .who{
+    position:absolute; top:0;                       /* 与气泡顶对齐 */
+    width:30px; height:30px; border-radius:8px;
+    display:grid; place-items:center;
+    font-size:12px; font-weight:600;
+    background:var(--panel2); border:1px solid var(--line);
+  }
+  /* AI 的头像挂左侧、用户的挂右侧 */
+  .msg.assistant .who{ left:-40px; }
+  .msg.user .who{ right:-40px; }
+
+  .msg .body{ width:100%; min-width:0; }
+  .bubble{
+    width:100%;                    /* ★ 等长：所有气泡一样宽，左右对齐 */
+    box-sizing:border-box;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:10px 13px; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere;
+    text-align:left;
+  }
+  .msg.user .bubble{background:var(--user);border-color:#2f5187}
+  .meta{font-size:11px;color:var(--dim);margin-top:4px}
+  .err{color:var(--err)}
+  footer{border-top:1px solid var(--line);background:var(--panel);padding:12px 16px}
+  .composer{max-width:860px;margin:0 auto;display:flex;gap:10px;align-items:flex-end}
+  textarea{
+    flex:1; resize:none; min-height:52px; max-height:180px; padding:11px 13px;
+    background:var(--bg); color:var(--fg); border:1px solid var(--line);
+    border-radius:10px; font:inherit; outline:none;
+  }
+  textarea:focus{border-color:var(--accent)}
+  button{
+    background:var(--accent); color:#fff; border:0; border-radius:10px;
+    padding:12px 20px; font:inherit; font-weight:600; cursor:pointer;
+  }
+  button:hover{background:var(--accent2)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--dim);font-weight:400;padding:8px 12px}
+  .hint{max-width:860px;margin:8px auto 0;font-size:11px;color:var(--dim)}
+  /* 悬停提示：不用原生 title（延迟 1s、样式不可控、长中文很丑） */
+  .tip{position:relative;display:inline-flex;align-items:center;
+       border-bottom:1px dotted var(--line);cursor:help}
+  .tip .bubble{
+    display:none;position:absolute;top:calc(100% + 9px);right:0;z-index:50;
+    width:310px;padding:10px 12px;background:#0b0d13;
+    border:1px solid #3a4152;border-radius:9px;color:var(--fg);
+    font-size:12px;line-height:1.65;font-weight:400;text-align:left;white-space:normal;
+    box-shadow:0 10px 26px rgba(0,0,0,.55);pointer-events:none;
+  }
+  .tip .bubble b{color:var(--accent);font-weight:600}
+  .tip .bubble code{background:#1c2130;padding:1px 5px;border-radius:4px;font-size:11px}
+  .tip .bubble .warn{color:#ffc061}
+  .tip:hover .bubble,.tip:focus-within .bubble{display:block}
+  .tip::after{content:''}
+  .cursor{display:inline-block;width:7px;height:15px;background:var(--accent);
+          vertical-align:-2px;animation:b 1s steps(1) infinite}
+  @keyframes b{50%{opacity:0}}
+</style>
+<style>
+/* ============ 历史对话侧栏 ============ */
+.shell { flex: 1 1 auto; display: flex; min-height: 0; }
+.col { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+#side {
+  width: 232px; flex: 0 0 232px; display: flex; flex-direction: column;
+  border-right: 1px solid var(--line, #2a2f3a); background: var(--panel, #14181f);
+  min-height: 0; overflow: hidden;
+}
+body.side-collapsed #side { display: none; }
+
+.sidehead {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 10px; font-size: 12px; opacity: .75; flex: 0 0 auto;
+}
+.mini {
+  background: transparent; border: 0; color: inherit; opacity: .7;
+  cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 5px;
+}
+.mini:hover { background: rgba(255,255,255,.09); opacity: 1; }
+
+.sidelist { flex: 1 1 auto; overflow-y: auto; padding: 0 6px 6px; min-height: 0; }
+.sidenone { font-size: 12px; opacity: .45; padding: 10px 6px; }
+
+.sess {
+  position: relative; padding: 7px 22px 7px 9px; border-radius: 7px;
+  cursor: pointer; margin-bottom: 3px; border: 1px solid transparent;
+}
+.sess:hover { background: rgba(255,255,255,.06); }
+.sess.on { background: rgba(90,160,255,.16); border-color: rgba(90,160,255,.4); }
+.sess .t {
+  font-size: 12.5px; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; line-height: 1.35;
+}
+.sess .m { font-size: 10.5px; opacity: .5; margin-top: 2px; }
+.sess .del {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  background: transparent; border: 0; color: inherit; opacity: 0;
+  cursor: pointer; font-size: 15px; line-height: 1; padding: 2px 5px; border-radius: 5px;
+}
+.sess:hover .del { opacity: .55; }
+.sess .del:hover { opacity: 1; background: rgba(255,90,90,.22); }
+
+/* 改名按钮：和删除按钮并排，平时藏着 */
+.sess .pen {
+  position: absolute; right: 22px; top: 50%; transform: translateY(-50%);
+  background: transparent; border: 0; color: inherit; opacity: 0;
+  cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 4px; border-radius: 5px;
+}
+.sess:hover .pen { opacity: .5; }
+.sess .pen:hover { opacity: 1; background: rgba(255,255,255,.14); }
+/* 名字太长时给两个按钮留位 */
+.sess { padding-right: 42px; }
+
+.sidefoot {
+  flex: 0 0 auto; padding: 7px 10px; font-size: 10.5px; opacity: .45;
+  border-top: 1px solid var(--line, #2a2f3a); line-height: 1.4;
+}
+
+/* 侧栏开关：**始终**在左边缘垂直居中、浮在内容之上。
+   · 展开时显示 ‹（提示"可以收起"）
+   · 收起时显示 ›（提示"可以展开"）
+   用 position:fixed 所以不占列表/正文的空间，也不会挡住侧栏里的内容
+   （侧栏宽 232px，按钮才 22px，压在侧栏右边缘之外一点）。
+   注意：不用 body 的类来切换显隐 —— 那样收起后会找不到按钮。 */
+#sideOpen {
+  position: fixed; left: 0; top: 50%; transform: translateY(-50%);
+  z-index: 70;
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 52px; padding: 0;
+  border-radius: 0 9px 9px 0;
+  background: rgba(40,47,60,.92); border: 1px solid #3a4354; border-left: 0;
+  color: #cfd8e6; cursor: pointer; font-size: 14px; line-height: 1;
+  opacity: .45; transition: opacity .15s, background .15s;
+}
+#sideOpen:hover { opacity: 1; background: rgba(58,67,84,.98); color: #fff; }
+/* 侧栏展开时按钮就压在侧栏右边缘上，稍微让它明显一点 */
+body:not(.side-collapsed) #sideOpen { left: 232px; margin-left: -1px; opacity: .35; }
+body:not(.side-collapsed) #sideOpen:hover { opacity: 1; }
+
+@media (max-width: 720px) {
+  /* 手机上侧栏是抽屉，按钮固定在左边缘 */
+  #sideOpen { left: 0 !important; opacity: .75; }
+  body.side-open #sideOpen { display: none; }
+}
+
+/* 提示条 */
+.toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 20px);
+  background: rgba(30,36,46,.97); color: #e8edf5; border: 1px solid #3a4354;
+  padding: 9px 16px; border-radius: 9px; font-size: 13px; max-width: 82vw;
+  opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 99;
+}
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+/* 手机：侧栏改成抽屉 */
+@media (max-width: 720px) {
+  #side {
+    position: fixed; left: 0; top: 0; bottom: 0; z-index: 50;
+    width: 78vw; max-width: 300px; transform: translateX(-102%);
+    transition: transform .22s ease; box-shadow: 6px 0 24px rgba(0,0,0,.45);
+  }
+  body.side-open #side { transform: translateX(0); }
+  body.side-collapsed #side { display: flex; transform: translateX(-102%); }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>bonsai2-27b · PTQ1_0</h1>
+  <span class="tag">127.0.0.1:8095</span>
+  <span class="tag"><span id="dot" class="dot"></span><span id="stat">检查中…</span></span>
+  <span class="spacer"></span>
+
+  <span class="tip"><label class="f" id="thinkLabel">
+    <input type="checkbox" id="think"> 思考
+  </label>
+  <span class="bubble">
+    <b>思考（推理模式）</b><br>
+    勾上后模型先写一段推理、再给答案；推理过程会显示在答案上方（可折叠）。<br>
+    不勾则完全不传该参数，行为和以前一样。<br>
+    <span class="warn">代价：推理是开放文本，MTP 推测解码基本无效，明显变慢。</span><br>
+    <span class="warn">若出现反复绕圈 / 空交付，别自己调参，按教程 §6 交给 UP主。</span>
+  </span></span>
+
+  <span class="tip"><label class="f">档位 <select class="f" id="effort" disabled>
+    <option value="minimal">minimal</option>
+    <option value="low">low</option>
+    <option value="medium" selected>medium</option>
+    <option value="high">high</option>
+    <option value="xhigh">xhigh</option>
+    <option value="max">max</option>
+  </select></label>
+  <span class="bubble">
+    <b>推理档位</b>（<code>reasoning_effort</code>）<br>
+    越高，模型想得越久越细，也越慢、越费 token。<br>
+    <code>minimal</code> 几乎不想 · <code>medium</code> 日常够用 · <code>max</code> 最啰嗦。<br>
+    只在你勾了「思考」时生效；模型模板里这个值的默认是 <code>xhigh</code>。
+  </span></span>
+
+  <span class="tip"><label class="f">max_tokens <input class="f" id="mt" type="number" value="1000" min="1" max="32768"></label>
+  <span class="bubble">
+    <b>单次回答的长度上限</b>（token，约 1 token ≈ 1 个汉字或半个英文词）。<br>
+    到了上限会停下，<code>finish_reason=length</code>，答案可能被砍掉尾巴。<br>
+    <span class="warn">勾选「思考」时，推理 token 也算在这个额度里</span> ——
+    太小会出现"只有思考、没有正文"，所以勾上思考我会自动把它提到 4096。
+  </span></span>
+
+  <span class="tip"><label class="f">温度 <input class="f" id="tp" type="number" value="0.7" step="0.1" min="0" max="2"></label>
+  <span class="bubble">
+    <b>温度（temperature）＝ 选词的随机性</b><br>
+    模型每步是在候选词的概率分布上抽签，温度就是往这个分布上拧的旋钮：<br>
+    &nbsp;· <code>0</code> = 永远选概率最高的词，同一问题结果基本固定（贪心）<br>
+    &nbsp;· <code>0.7</code> = 略随机，表达自然多样（当前值）<br>
+    &nbsp;· <code>1.5+</code> = 明显发散，容易跑题、胡说<br>
+    它<b>不改模型的知识</b>，只改"选词的胆子"。<br>
+    <span class="warn">要跑测速（数数字）请先调成 0</span>，否则读数不能和基准比。
+  </span></span>
+
+  <span class="tip"><button class="ghost" id="newChat">新对话</button>
+  <span class="bubble">开一段新对话。当前这段会自动存进左边的列表，随时能点回来。</span></span>
+
+  <span class="tip"><button class="ghost" id="clear">清空</button>
+  <span class="bubble">丢掉当前对话上下文，重新开始。<br>生成本身没结束时会忽略点击。</span></span>
+</header>
+
+<div class="shell">
+  <!-- 左侧：历史对话列表。数据存在浏览器本地（localStorage），关掉再打开还在。 -->
+  <aside id="side">
+    <div class="sidehead">
+      <span>历史对话</span>
+    </div>
+    <div class="sidelist" id="sidelist"></div>
+    <div class="sidefoot" id="sidefoot"></div>
+  </aside>
+
+  <div class="col">
+    <!-- 侧栏收起时用的浮动展开按钮。放在这里（不在 header 里）——
+         因为 header 里那个按钮会随侧栏一起看不见。 -->
+    <button id="sideOpen" title="展开历史对话">›</button>
+    <main id="main"><div class="wrap" id="wrap"></div></main>
+
+<footer>
+  <div class="composer">
+    <textarea id="in" placeholder="输入消息…  Enter 发送，Shift+Enter 换行"></textarea>
+    <button id="send">发送</button>
+  </div>
+  <div class="hint">模型由本机 <code>ninfer-serve-120a.exe</code> 提供 · 设备池 4,032 token / 主机池 8 GiB · 思考已关闭</div>
+</footer>
+  </div><!-- /.col -->
+</div><!-- /.shell -->
+
+<script>
+const $ = s => document.querySelector(s);
+const wrap = $('#wrap'), main = $('#main'), input = $('#in'), send = $('#send');
+const messages = [];
+/// 与 messages 按下标对齐的附加信息（思考过程、速度数字）。
+/// 这些字段引擎不接受，所以不能塞进 messages 里，单独放这儿。
+const ARCHIVE = [];
+let busy = false;
+
+// ============ 会话存储 ============
+//
+// 优先存到**安装目录**（走 /chats 接口 → <安装目录>\对话历史.json）。
+// 好处：换浏览器、换设备（局域网访问）都是同一份；清浏览器数据不会丢；能直接备份。
+// 服务端不可用（比如直接用 file:// 打开）时自动退回浏览器 local storage，功能不丢。
+//
+// 每条会话除了消息，还记下当时的参数（思考开关 / 档位 / max_tokens / 温度），
+// 点回历史时一并恢复 —— 否则重开会话后参数变成默认值，结果对不上。
+const LS_SESSIONS = 'lm.sessions';
+const LS_CURRENT  = 'lm.current';
+const MAX_MSGS_PER_CHAT = 300;
+const MAX_CHATS = 100;
+
+let SESSIONS = [];
+let CURRENT_ID = null;
+let STORE = 'local';        // 'file' = 存安装目录，'local' = 退回浏览器存储
+
+function loadStore(cb){
+  fetch('/chats', { cache:'no-store' })
+    .then(r => r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(txt => {
+      let arr = [];
+      try { arr = JSON.parse(txt); } catch(e){ arr = []; }
+      SESSIONS = Array.isArray(arr) ? arr : [];
+      STORE = 'file';
+      try { CURRENT_ID = localStorage.getItem(LS_CURRENT) || null; }catch(e){ CURRENT_ID = null; }
+      renderSide();
+      if (cb) cb();
+    })
+    .catch(() => {
+      // 退回浏览器存储
+      STORE = 'local';
+      try{
+        SESSIONS = JSON.parse(localStorage.getItem(LS_SESSIONS) || '[]');
+        if (!Array.isArray(SESSIONS)) SESSIONS = [];
+      }catch(e){ SESSIONS = []; }
+      try{ CURRENT_ID = localStorage.getItem(LS_CURRENT) || null; }catch(e){ CURRENT_ID = null; }
+      renderSide();
+      if (cb) cb();
+    });
+}
+
+function saveStore(){
+  // 浏览器那份也写 —— 服务端不可用时不至于丢
+  try{
+    localStorage.setItem(LS_SESSIONS, JSON.stringify(SESSIONS));
+    if (CURRENT_ID) localStorage.setItem(LS_CURRENT, CURRENT_ID);
+  }catch(e){ /* 配额满就算了，主存储是文件 */ }
+
+  if (STORE !== 'file') return true;
+
+  // 异步写文件，不卡界面
+  fetch('/chats', {
+    method:'POST',
+    headers:{ 'Content-Type':'application/json' },
+    body: JSON.stringify(SESSIONS)
+  }).then(r => { if (!r.ok) toast('对话没能写进安装目录（HTTP ' + r.status + '）'); })
+    .catch(() => { toast('对话没能写进安装目录，已存在浏览器里'); STORE = 'local'; });
+  return true;
+}
+
+function curSession(){
+  if (!CURRENT_ID) return null;
+  for (const s of SESSIONS) if (s.id === CURRENT_ID) return s;
+  return null;
+}
+
+function newSession(){
+  const s = { id: 'c' + Date.now() + Math.random().toString(36).slice(2,7), title: '', at: Date.now(), msgs: [] };
+  SESSIONS.unshift(s);
+  if (SESSIONS.length > MAX_CHATS) SESSIONS.length = MAX_CHATS;
+  CURRENT_ID = s.id;
+  return s;
+}
+
+/// 当前界面上那几项生成参数。
+/// 存进会话里 —— 点回历史时一并恢复，否则参数变回默认值，重跑结果对不上。
+function currentParams(){
+  return {
+    think:  !!(think && think.checked),
+    effort: (effort && effort.value) || 'medium',
+    mt:     parseInt((mt && mt.value) || '1000') || 1000,
+    tp:     parseFloat((tp && tp.value) || '0.7')
+  };
+}
+
+/// 把存下来的参数套回界面
+function applyParams(p){
+  if (!p) return;
+  try{
+    if (think) think.checked = !!p.think;
+    if (effort && p.effort) effort.value = p.effort;
+    if (mt && p.mt) mt.value = p.mt;
+    if (tp && p.tp !== undefined && p.tp !== null) tp.value = p.tp;
+    if (typeof syncThink === 'function') syncThink();
+  }catch(e){}
+}
+
+/// 把 messages[] 里的内容同步进会话并落盘。
+///
+/// messages[] 是要发给引擎的（严格 role/content/reasoning_content），
+/// 而界面上还要显示思考过程、速度数字 —— 那两项引擎不接受，所以另外挂在
+/// ARCHIVE 里，按数组下标对齐。这样只有一处"真相来源"，不会两边互相覆盖。
+function persist(){
+  let s = curSession();
+  if (!s){ if (messages.length === 0) return; s = newSession(); }
+  if (messages.length === 0) return;
+
+  const start = Math.max(0, messages.length - MAX_MSGS_PER_CHAT);
+  s.msgs = [];
+  for (let i = start; i < messages.length; i++){
+    const m = messages[i];
+    const e = { role: m.role, content: m.content };
+    if (m.reasoning_content) e.reasoning = m.reasoning_content;
+    const a = ARCHIVE[i];
+    if (a){
+      if (!e.reasoning && a.reasoning) e.reasoning = a.reasoning;
+      if (a.meta) e.meta = a.meta;
+    }
+    s.msgs.push(e);
+  }
+  s.at = Date.now();
+  s.params = currentParams();      // 记住当时的参数
+  // 标题只在有真正的用户消息时才定 —— 否则招呼语那条 assistant 会让标题
+  // 先被写成「(空对话)」，之后即使来了用户消息也不再更新了。
+  // 用户手动改过名（renamed）就不动它。
+  const firstUser = s.msgs.find(m => m.role === 'user');
+  if (firstUser && !s.title) s.title = firstUser.content.slice(0, 40);
+  if (!s.title && firstUser) s.title = firstUser.content.slice(0, 40);
+  saveStore();
+  renderSide();
+}
+
+/// 给会话改名（双击标题或点铅笔图标）
+function renameSession(id){
+  const s = SESSIONS.find(x => x.id === id);
+  if (!s) return;
+  const cur = s.title || '';
+  const name = prompt('给这段对话起个名字：', cur);
+  if (name === null) return;               // 取消
+  const t = name.trim();
+  s.title = t.length > 0 ? t.slice(0, 60) : cur;
+  s.renamed = true;
+  saveStore();
+  renderSide();
+}
+
+function toast(msg){
+  let t = $('#toast');
+  if (!t){
+    t = document.createElement('div');
+    t.id = 'toast'; t.className = 'toast';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.classList.add('on');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove('on'), 4000);
+}
+
+// ============ 侧栏渲染 ============
+
+function renderSide(){
+  const list = $('#sidelist');
+  if (!list) return;
+  list.innerHTML = '';
+  const withMsgs = SESSIONS.filter(s => s.msgs && s.msgs.length);
+  if (withMsgs.length === 0){
+    const d = document.createElement('div');
+    d.className = 'sidenone';
+    d.textContent = '还没有历史对话';
+    list.appendChild(d);
+  } else {
+    for (const s of withMsgs){
+      const row = document.createElement('div');
+      row.className = 'sess' + (s.id === CURRENT_ID ? ' on' : '');
+      const t = document.createElement('div');
+      t.className = 't';
+      t.textContent = s.title || '(空对话)';
+      t.title = '双击可以改名';
+      t.ondblclick = ev => { ev.stopPropagation(); renameSession(s.id); };
+      const m = document.createElement('div');
+      m.className = 'm';
+      // 顺带显示当时用的参数，一眼能看出这个会话是怎么跑的
+      let tag = s.msgs.length + ' 条 · ' + fmtTime(s.at);
+      if (s.params){
+        tag += ' · ' + (s.params.think ? ('思考' + s.params.effort) : '不思考')
+             + ' · ' + s.params.mt + 'tok · T' + s.params.tp;
+      }
+      m.textContent = tag;
+
+      const pen = document.createElement('button');
+      pen.className = 'pen'; pen.textContent = '✎'; pen.title = '改名';
+      pen.onclick = ev => { ev.stopPropagation(); renameSession(s.id); };
+
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = '×'; del.title = '删除这段对话';
+      del.onclick = ev => { ev.stopPropagation(); removeSession(s.id); };
+
+      row.appendChild(t); row.appendChild(m); row.appendChild(pen); row.appendChild(del);
+      row.onclick = () => openSession(s.id);
+      list.appendChild(row);
+    }
+  }
+  const foot = $('#sidefoot');
+  if (foot){
+    let bytes = 0;
+    try{ bytes = (localStorage.getItem(LS_SESSIONS) || '').length; }catch(e){}
+    foot.textContent = withMsgs.length + ' 段对话 · '
+                     + (STORE === 'file' ? '存在安装目录' : '存在浏览器里（安装目录不可写）');
+  }
+}
+
+function fmtTime(ts){
+  const d = new Date(ts), n = new Date();
+  const p = x => String(x).padStart(2,'0');
+  const sameDay = d.toDateString() === n.toDateString();
+  return sameDay ? (p(d.getHours()) + ':' + p(d.getMinutes()))
+                 : (d.getMonth()+1) + '/' + d.getDate() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+/// 把一条已存的消息画出来
+function drawStored(m){
+  const out = addMsg(m.role, '');
+  if (m.role === 'assistant'){
+    if (m.reasoning){
+      const d = ensureThink(out);
+      d.open = false;
+      out.thinkText.textContent = m.reasoning;
+      out.thinkSummary.textContent = '思考过程（' + m.reasoning.length + ' 字，点击展开）';
+    }
+    out.bubble.textContent = m.content || '';
+  } else {
+    out.bubble.textContent = m.content || '';
+  }
+  if (m.meta) out.meta.textContent = m.meta;
+  return out;
+}
+
+function renderAll(){
+  wrap.innerHTML = '';
+  for (const m of messages){
+    if (m.role === 'system') continue;
+    drawStored(m);
+  }
+  scroll();
+}
+
+function openSession(id){
+  if (busy) return;
+  const s = SESSIONS.find(x => x.id === id);
+  if (!s) return;
+  CURRENT_ID = id;
+  messages.length = 0; ARCHIVE.length = 0;
+  for (const m of s.msgs){
+    const lean = { role: m.role, content: m.content };
+    if (m.reasoning) lean.reasoning_content = m.reasoning;
+    messages.push(lean);
+    ARCHIVE.push({ reasoning: m.reasoning || '', meta: m.meta || '' });
+  }
+  saveStore();
+  renderAll();
+  renderSide();
+  hideSideOnPhone();
+}
+
+function removeSession(id){
+  const i = SESSIONS.findIndex(x => x.id === id);
+  if (i < 0) return;
+  SESSIONS.splice(i, 1);
+  saveStore();
+  if (id === CURRENT_ID){
+    CURRENT_ID = null;
+    messages.length = 0; ARCHIVE.length = 0;
+    wrap.innerHTML = '';
+    greet();
+  }
+  renderSide();
+}
+
+function newChat(){
+  if (busy) return;
+  CURRENT_ID = null;
+  messages.length = 0; ARCHIVE.length = 0;
+  wrap.innerHTML = '';
+  saveStore();
+  greet();
+  renderSide();
+  hideSideOnPhone();
+}
+
+function hideSideOnPhone(){
+  if (window.innerWidth <= 720){
+    document.body.classList.remove('side-open');
+    if (typeof syncSideBtn === 'function') syncSideBtn();
+  }
+}
+
+// ============ 侧栏交互 ============
+
+/// 切换侧栏。桌面用 side-collapsed（整个藏起来），手机用 side-open（抽屉）。
+/// 按钮上的箭头跟着状态走：收起时 ›（点开），展开时 ‹（点收）。
+function toggleSide(){
+  const btn = $('#sideOpen');
+  if (window.innerWidth <= 720){
+    document.body.classList.toggle('side-open');
+    if (btn) btn.textContent = document.body.classList.contains('side-open') ? '‹' : '›';
+  } else {
+    document.body.classList.toggle('side-collapsed');
+    if (btn) btn.textContent = document.body.classList.contains('side-collapsed') ? '›' : '‹';
+  }
+}
+$('#sideOpen').onclick = toggleSide;
+
+/// 按当前状态把箭头对准（窗口尺寸变化后也要调一次）
+function syncSideBtn(){
+  const btn = $('#sideOpen');
+  if (!btn) return;
+  const collapsed = window.innerWidth <= 720
+    ? !document.body.classList.contains('side-open')
+    : document.body.classList.contains('side-collapsed');
+  btn.textContent = collapsed ? '›' : '‹';
+  btn.title = collapsed ? '展开历史对话' : '收起历史对话';
+}
+window.addEventListener('resize', syncSideBtn);
+syncSideBtn();
+$('#newChat').onclick = newChat;
+
+loadStore();
+
+function esc(s){ return s; }
+
+function addMsg(role, text){
+  const el = document.createElement('div');
+  el.className = 'msg ' + role;
+  el.innerHTML = '<div class="who">' + (role === 'user' ? '我' : 'AI') + '</div>' +
+                 '<div class="body"><div class="bubble"></div><div class="meta"></div></div>';
+  const bubble = el.querySelector('.bubble');
+  bubble.textContent = text || '';
+  wrap.appendChild(el);
+  main.scrollTop = main.scrollHeight;
+  return { el, bubble, meta: el.querySelector('.meta') };
+}
+
+// 思考块：只有在真收到 reasoning 内容时才创建，避免空盒子
+function ensureThink(out){
+  if (out.think) return out.think;
+  const d = document.createElement('details');
+  d.className = 'think';
+  d.open = true;
+  d.innerHTML = '<summary>思考中…</summary><div class="tc"></div>';
+  out.el.querySelector('.body').insertBefore(d, out.bubble);
+  out.think = d;
+  out.thinkText = d.querySelector('.tc');
+  out.thinkSummary = d.querySelector('summary');
+  return d;
+}
+
+function scroll(){ main.scrollTop = main.scrollHeight; }
+
+// 当前模型 ID 由引擎的 /v1/models 提供（启动器按实际 .ninfer 文件名推导后传给引擎）。
+// 这里缓存下来，发请求时用它 —— 换模型就自动跟着变，不再写死。
+let MODEL_ID = '';
+
+async function ping(){
+  try{
+    const r = await fetch('/v1/models', {cache:'no-store'});
+    const j = await r.json();
+    const id = (j.data && j.data[0] && j.data[0].id) ? j.data[0].id : '';
+    if (id) MODEL_ID = id;
+    $('#dot').className = 'dot on';
+    $('#stat').textContent = '就绪 · ' + (id || 'ok');
+  }catch(e){
+    $('#dot').className = 'dot off';
+    $('#stat').textContent = '引擎未响应';
+  }
+}
+ping(); setInterval(ping, 15000);
+
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); go(); }
+});
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(180, input.scrollHeight) + 'px';
+});
+send.addEventListener('click', go);
+$('#clear').addEventListener('click', () => {
+  if (busy) return;
+  // 只清当前会话的上下文，**不删历史** —— 它已经存在左边列表里了。
+  // 想删整段对话用列表里那个 ×。
+  messages.length = 0; ARCHIVE.length = 0; wrap.innerHTML = '';
+  greet();
+});
+
+// 思考开关：勾上才传 reasoning_effort，档位随勾选启用/禁用。
+// 注意 max_tokens —— 推理 token 是算在输出限额里的，开思考时给太小会出现
+// finish_reason=length 且正文为空的“假故障”（教程 §5 第 1 条那个经典误判）。
+const think = $('#think'), effort = $('#effort'), thinkLabel = $('#thinkLabel'), mt = $('#mt');
+function syncThink(){
+  effort.disabled = !think.checked;
+  thinkLabel.classList.toggle('on', think.checked);
+  if (think.checked && (parseInt(mt.value) || 0) < 2000) mt.value = 4096;
+  if (!think.checked && (parseInt(mt.value) || 0) === 4096) mt.value = 1000;
+}
+think.addEventListener('change', syncThink);
+syncThink();
+
+async function go(){
+  const text = input.value.trim();
+  if (!text || busy) return;
+  busy = true; send.disabled = true;
+  input.value = ''; input.style.height = 'auto';
+
+  // 模型 ID 取自引擎；首次发送前若还没拿到就先问一次
+  if (!MODEL_ID) { try { await ping(); } catch(e){} }
+
+  messages.push({ role:'user', content:text });
+  addMsg('user', text);
+  persist();                          // 用户这条立刻落盘，刷新也不丢
+  const out = addMsg('assistant', '');
+  out.bubble.innerHTML = '<span class="cursor"></span>';
+  out.meta.textContent = '生成中…';
+
+  const t0 = performance.now();
+  let chars = 0, ttft = null;
+
+  // 组装请求体：思考（以及“保留思考”）只在勾选时才带上
+  const reqBody = {
+    model: MODEL_ID || 'local-model',
+    messages,
+    stream: true,
+    temperature: parseFloat($('#tp').value) || 0,
+    max_tokens: parseInt($('#mt').value) || 1000
+  };
+  if (think.checked){
+    reqBody.reasoning_effort = effort.value;
+    reqBody.preserve_thinking = true;
+  }
+
+  try{
+    const res = await fetch('/v1/chat/completions', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify(reqBody)
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + (await res.text()).slice(0,300));
+    if (!res.body) throw new Error('该浏览器不支持流式读取');
+
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    // usage / timings 都收：引擎实测给的是 timings（在最后一个 chunk 里），
+    // usage 是 OpenAI 标准字段，留着手别的后端用。
+    let buf = '', acc = '', reasoning = '', finish = '', usage = null, timings = null;
+    out.bubble.textContent = '';
+
+    while (true){
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream:true });
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const line of lines){
+        const s = line.trim();
+        if (!s.startsWith('data:')) continue;
+        const d = s.slice(5).trim();
+        if (d === '[DONE]') continue;
+        let j; try { j = JSON.parse(d); } catch(_) { continue; }
+        if (j.usage) usage = j.usage;
+        if (j.timings) timings = j.timings;   // ← 引擎的权威统计在这里
+        const ch = j.choices && j.choices[0];
+        if (!ch) continue;
+        const dl = ch.delta || {};
+        // 推理内容：不同后端可能放在 reasoning_content 或 reasoning 里，两个都收
+        const rp = dl.reasoning_content || dl.reasoning || '';
+        if (rp){
+          const t = ensureThink(out);
+          reasoning += rp;
+          out.thinkText.textContent = reasoning;
+          out.thinkSummary.textContent = '思考中… ' + reasoning.length + ' 字';
+          if (ttft === null) ttft = (performance.now() - t0) / 1000;
+          scroll();
+        }
+        const piece = dl.content || '';
+        if (piece){
+          if (ttft === null) ttft = (performance.now() - t0) / 1000;
+          // 正文一开始，就把思考折叠起来（想看随时点开）
+          if (out.think && out.think.open){
+            out.think.open = false;
+            out.thinkSummary.textContent = '思考过程（' + reasoning.length + ' 字，点击展开）';
+          }
+          acc += piece; chars += piece.length;
+          out.bubble.textContent = acc;
+          scroll();
+        }
+        if (ch.finish_reason) finish = ch.finish_reason;
+      }
+    }
+    out.bubble.textContent = acc || (reasoning ? '(只有思考，没有正文 —— 多半是 max_tokens 太小被截断，看下面的 finish=)' : '(空回答)');
+    if (out.think && out.thinkSummary.textContent.startsWith('思考中')){
+      out.thinkSummary.textContent = '思考过程（' + reasoning.length + ' 字，点击展开）';
+    }
+    // 多轮历史：思考内容按引擎要求放回 assistant.reasoning_content
+    const hist = { role:'assistant', content: acc };
+    if (reasoning) hist.reasoning_content = reasoning;
+    messages.push(hist);
+
+    const dt = (performance.now() - t0) / 1000;
+
+    // ★ token 用量与速度：**引擎不返回 usage**，它在最后一个 chunk 里给 `timings`。
+    //   实测那一行长这样（这是权威值，比我们自己在浏览器里估的准）：
+    //     "timings":{"predicted_n":30,"prompt_n":55,
+    //                "predicted_per_second":32.05,"prompt_per_second":188.96,
+    //                "predicted_ms":904.9,"prompt_ms":291.1,
+    //                "draft_n":53,"draft_n_accepted":15}
+    //   如果哪天引擎换成给 usage，下面也兼容 —— 两个都认。
+    let tokTxt = '';
+    let tpsTxt = '';
+
+    if (timings){
+      const outN = timings.predicted_n, inN = timings.prompt_n;
+      if (outN) tokTxt = '输出 ' + outN + ' tok';
+      if (inN)  tokTxt += (tokTxt ? ' · ' : '') + '输入 ' + inN + ' tok';
+      if (timings.predicted_per_second)
+        tpsTxt = timings.predicted_per_second.toFixed(1) + ' tok/s';
+      // MTP 草稿命中率：命中越多加速越明显，掉下来就说明这轮不好加速
+      if (timings.draft_n)
+        tokTxt += (tokTxt ? ' · ' : '') + '草稿命中 '
+               + Math.round(100 * (timings.draft_n_accepted || 0) / timings.draft_n) + '%';
+    } else if (usage){
+      // 兼容走 usage 的后端
+      const ct = usage.completion_tokens, pt = usage.prompt_tokens;
+      if (ct) tokTxt = '输出 ' + ct + ' tok';
+      if (pt) tokTxt += (tokTxt ? ' · ' : '') + '输入 ' + pt + ' tok';
+      if (ct && dt > 0){
+        const decode = (ttft !== null && dt > ttft) ? (dt - ttft) : dt;
+        if (decode > 0.05) tpsTxt = (ct / decode).toFixed(1) + ' tok/s';
+      }
+    }
+
+    // 两个都没有就退回用字数估个速度，至少能给个参考
+    if (!tpsTxt && dt > 0) tpsTxt = (chars / dt).toFixed(1) + ' 字/s';
+
+    const metaTxt =
+      (finish ? 'finish=' + finish + ' · ' : '') +
+      (reasoning ? '思考 ' + reasoning.length + ' 字 · ' : '') +
+      'TTFT ' + (ttft === null ? '—' : ttft.toFixed(2) + 's') +
+      ' · 总 ' + dt.toFixed(1) + 's' +
+      ' · ' + tpsTxt +
+      (tokTxt ? ' · ' + tokTxt : '');
+    out.meta.textContent = metaTxt;
+
+    // ★ 存进会话：content / reasoning / meta 都留一份 ——
+    //   只存 content 的话，重开对话时思考过程和速度数字就没了。
+    //   （messages[] 里那份保持原样，因为那是要发给引擎的，不能塞额外字段）
+    archiveLast(acc, reasoning, metaTxt);
+  }catch(err){
+    out.bubble.innerHTML = '';
+    const d = document.createElement('div');
+    d.className = 'err';
+    d.textContent = '请求失败：' + err.message;
+    out.bubble.appendChild(d);
+    out.meta.textContent = '';
+  }finally{
+    busy = false; send.disabled = false; input.focus(); scroll();
+  }
+}
+
+/// 记下刚生成完那条 assistant 的思考过程和速度数字。
+/// messages[] 里那份要发给引擎、不能塞额外字段，所以按下标挪到 ARCHIVE，
+/// 由 persist() 合并进会话存档。
+function archiveLast(acc, reasoning, metaTxt){
+  ARCHIVE[messages.length - 1] = { reasoning: reasoning || '', meta: metaTxt || '' };
+  persist();
+}
+
+/// 招呼语。它也算会话的一条消息 —— 否则新会话在列表里存不下来
+/// （persist 在 messages 为空时直接返回，会话就永远是空的）。
+const GREETING = '你好。我是本机 8095 端口上的 bonsai2-27b（PTQ1_0 档，MTP 推测解码）。\n'
+  + '上方可以勾选「思考」并选推理档位 —— 开启后模型会先写推理再写答案，推理过程折叠在答案上方，点标题可展开。\n'
+  + '注意：推理 token 计入 max_tokens（勾选思考时我把默认值提到 4096），开思考会明显变慢，因为 MTP 推测解码对推理文本基本无效。';
+
+function greet(){
+  addMsg('assistant', GREETING);
+  // 放进引擎用的消息数组里 —— 它是 assistant 消息，引擎接受，
+  // 而且这样这段新会话才有个"内容"能让 persist 存下来。
+  messages.push({ role:'assistant', content: GREETING });
+  persist();
+}
+
+// 启动：先从安装目录读会话（异步），再恢复上次那一段
+(function boot(){
+  loadStore(function(){
+    const s = curSession();
+    if (s && s.msgs && s.msgs.length){
+      messages.length = 0; ARCHIVE.length = 0;
+      for (const m of s.msgs){
+        const lean = { role: m.role, content: m.content };
+        if (m.reasoning) lean.reasoning_content = m.reasoning;   // 引擎要求放回这个字段
+        messages.push(lean);
+        ARCHIVE.push({ reasoning: m.reasoning || '', meta: m.meta || '' });
+      }
+      applyParams(s.params);     // 连带恢复当时的参数
+      renderAll();
+    } else {
+      greet();
+    }
+    renderSide();
+  });
+})();
+
+// 离开页面前再存一次（流式生成中途关页面时的兜底）
+window.addEventListener('beforeunload', () => { try{ persist(); }catch(e){} });
+</script>
+</body>
+</html>
