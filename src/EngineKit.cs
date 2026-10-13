@@ -50,7 +50,7 @@ internal static class EngineKit
     /// ★★ 引擎更新时改这里 ★★
     ///   把日期改成新引擎包的日期，重新编译安装器即可。
     ///   对应的包要传到 KitTag 那个 Release 上。
-    public const string KitDate = "20261002";
+    public const string KitDate = "20261013";
 
     public static string KitFileName(string archKey)
     {
