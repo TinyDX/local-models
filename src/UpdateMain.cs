@@ -14,7 +14,7 @@ internal static class UpdateMain
         string newVer = AppInfo.Version;
 
         // ---- 找安装目录 ----
-        //   支持命令行直接指定：LocalModels-Update.exe /dir "<安装目录>"
+        //   支持命令行直接指定：LocalModels-Update.exe /dir "D:\Local Models"
         string dir = "";
         for (int i = 0; i < args.Length - 1; i++)
             if (args[i].Equals("/dir", StringComparison.OrdinalIgnoreCase))

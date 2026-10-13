@@ -44,6 +44,26 @@ internal static class EngineKit
         return "未知架构";
     }
 
+    /// ArchKey → 引擎 exe 文件名
+    public static string EngineExeFor(string archKey)
+    {
+        if (archKey == "8.6") return "ninfer-serve-86.exe";
+        if (archKey == "8.9") return "ninfer-serve-89.exe";
+        if (archKey == "12.0") return "ninfer-serve-120a.exe";
+        return "";
+    }
+
+    /// 从已装的 exe 文件名反推架构（ninfer-serve-120a.exe → 12.0）
+    public static string ArchFromEngineExe(string exeName)
+    {
+        if (string.IsNullOrEmpty(exeName)) return "";
+        string n = exeName.ToLowerInvariant();
+        if (n.Contains("120a")) return "12.0";
+        if (n.Contains("-89")) return "8.9";
+        if (n.Contains("-86")) return "8.6";
+        return "";
+    }
+
     /// 引擎包文件名。日期部分与上游发布保持一致。
     /// 找不到精确匹配时，还会用通配去找（见 FindLocalKit）。
     ///

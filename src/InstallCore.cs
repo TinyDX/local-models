@@ -152,7 +152,21 @@ internal static class InstallCore
     /// 否则会变成 <安装目录>\infer-engine-sm120a-20261002\engine\，程序找不到引擎。
     ///
     /// 用 .NET 自带的 ZipArchive，不引第三方库。
+    ///
+    /// 安装器与更新器共用 —— 更新器也要解引擎包，逻辑不能分叉。
+    /// 但更新器不想拖进整个 Installer.cs（那里面有界面代码），
+    /// 所以真正的实现放在 KitExtract.cs —— 那个文件不依赖 InstallerContext。
+    public static int ExtractKitTo(string zipPath, string targetDir, Action<string> log)
+    {
+        return KitExtract.Run(zipPath, targetDir, log);
+    }
+
     private static int ExtractKit(string zipPath, string targetDir, Action<string> log)
+    {
+        return KitExtract.Run(zipPath, targetDir, log);
+    }
+
+    private static int ExtractKitOld(string zipPath, string targetDir, Action<string> log)
     {
         using (var fs = File.OpenRead(zipPath))
         using (var za = new System.IO.Compression.ZipArchive(fs, System.IO.Compression.ZipArchiveMode.Read))

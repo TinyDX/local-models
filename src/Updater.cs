@@ -45,6 +45,57 @@ internal static class UpdaterCore
         new string[] { "更新日志.txt", "更新日志.txt" }
     };
 
+    // ---------------- 引擎更新 ----------------
+    //
+    // 为什么增量包也要管引擎：
+    //   引擎更新时（比如这次 20261002 → 20261013），
+    //   如果只能靠用户重下 800 MB 的安装包，那增量包就没意义了。
+    //   所以增量包也带下载引擎的能力 —— 反正下载代码是现成的。
+    //
+    // 判断要不要更新：看安装目录里有没有 engine\infer-serve-<arch>.exe，
+    //   有就说明引擎已装。至于版本新旧，靠一个记录文件（引擎版本.txt）。
+    //   没记录文件 = 旧版装的 = 需要更新（除非用户自己跳过）。
+
+    /// 引擎版本记录文件（写在安装目录）
+    public const string EngineVersionFile = "引擎版本.txt";
+
+    /// 读已装引擎的版本标记。没有就返回空串（= 旧版装的，需要更新）。
+    public static string InstalledEngineVersion(string dir)
+    {
+        try
+        {
+            string p = Path.Combine(dir, EngineVersionFile);
+            if (!File.Exists(p)) return "";
+            return File.ReadAllText(p, System.Text.Encoding.UTF8).Trim();
+        }
+        catch { return ""; }
+    }
+
+    /// 安装目录里有没有引擎
+    public static bool HasEngine(string dir, string archKey)
+    {
+        try
+        {
+            string tag = EngineKit.ArchTag(archKey);
+            if (tag.Length == 0) return false;
+            // 三个架构的文件名都试一遍（用户可能换过显卡）
+            foreach (string arch in EngineKit.ArchKeys)
+            {
+                string exe = Path.Combine(dir, "engine", EngineKit.EngineExeFor(arch));
+                if (File.Exists(exe)) return true;
+            }
+            return false;
+        }
+        catch { return false; }
+    }
+
+    /// 写引擎版本标记
+    public static void MarkEngineVersion(string dir, string version)
+    {
+        try { File.WriteAllText(Path.Combine(dir, EngineVersionFile), version, new System.Text.UTF8Encoding(false)); }
+        catch { }
+    }
+
     /// 从注册表读安装目录（安装器写的 InstallLocation）
     public static string RegistryDir()
     {
@@ -119,7 +170,9 @@ internal static class UpdaterCore
                     if (sb.Length > 24) break;
                 }
                 string s = sb.ToString();
-                if (Regex.IsMatch(s, @"^\d+\.\d+\.\d+Beta$")) return s;
+                // ★ 大小写都要认 —— 版本号从 0.3.5Beta 改成了 0.4.0beta，
+                //   只认大写 Beta 会导致「检测到的版本：无法识别」
+                if (Regex.IsMatch(s, @"^\d+\.\d+\.\d+[Bb]eta$")) return s;
             }
         }
         catch { }
