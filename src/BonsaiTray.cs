@@ -117,7 +117,10 @@ internal sealed class BonsaiTray : ApplicationContext
         "--max-context", "262144",
         "--kv-capacity", "{kv}",
         "--kv-dtype", "k8v4",
-        "--host-kv-mib", "8192",
+        // ★ 不写死：安装器按显存分档算出该用多少（大显存档 16384），
+        //   写死 8192 会让 16 GB 卡的主机换页池偏小，长对话时报
+        //   "context cache exhausted: Paged KV pool has no free page"。
+        "--host-kv-mib", "{hostkv}",
         "--cuda-graph-allowance-mib", "{graph}",
         "--prefill-chunk", "1024",
         "--spec", "mtp",
@@ -166,6 +169,15 @@ internal sealed class BonsaiTray : ApplicationContext
                 // 密钥首次运行随机生成 —— 模板是 static readonly，
                 // 初始化时还没有密钥，所以只能在这里替换。
                 a.Add(ApiKey);
+            }
+            else if (s == "{hostkv}")
+            {
+                // 主机 KV 池大小 —— 安装器按显存档位算好写进 launch-config.json。
+                // 没配置文件时退回 8192（8 GB 卡的安全值）。
+                int host = 8192;
+                try { host = LaunchConfig.Load(Root).HostKvMiB; } catch { }
+                if (host < 2048) host = 2048;
+                a.Add(host.ToString());
             }
             else a.Add(s);
         }
@@ -3522,7 +3534,13 @@ internal sealed class BonsaiTray : ApplicationContext
         }
         if (_lblState != null && !_lblState.IsDisposed)
         {
-            if (_busy) { _lblState.Text = "● 处理中…"; _lblState.ForeColor = C.Amber; }
+            // 超池优先显示 —— 这时候「已载入」是对的，但答案不可信，必须让用户知道
+            if (ContextGuard.LastOverflowTokens > 0 && loaded)
+            {
+                _lblState.Text = "● 模型已载入（⚠ 上次请求超出 KV 池，回答可能不可信）";
+                _lblState.ForeColor = C.Amber;
+            }
+            else if (_busy) { _lblState.Text = "● 处理中…"; _lblState.ForeColor = C.Amber; }
             else if (loaded) { _lblState.Text = "● 模型已载入"; _lblState.ForeColor = C.Green; }
             else { _lblState.Text = "● 模型未载入"; _lblState.ForeColor = C.Dim; }
         }
@@ -3716,8 +3734,22 @@ internal sealed class BonsaiTray : ApplicationContext
         writer = w;
 
         var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        p.OutputDataReceived += (s, e) => { if (e.Data != null) TryW(w, e.Data); };
-        p.ErrorDataReceived += (s, e) => { if (e.Data != null) TryW(w, e.Data); };
+        // 每行都过一遍超池检测 —— 引擎超池时只打 warning 不报错，
+        // 但答案实际是错的，必须让用户看见。（见 ContextGuard.cs）
+        p.OutputDataReceived += (s, e) =>
+        {
+            if (e.Data == null) return;
+            TryW(w, e.Data);
+            if (e.Data.IndexOf("prompt exceeds the resident Device KV pool", StringComparison.Ordinal) >= 0)
+                ContextGuard.NoteLine(e.Data);
+        };
+        p.ErrorDataReceived += (s, e) =>
+        {
+            if (e.Data == null) return;
+            TryW(w, e.Data);
+            if (e.Data.IndexOf("prompt exceeds the resident Device KV pool", StringComparison.Ordinal) >= 0)
+                ContextGuard.NoteLine(e.Data);
+        };
         p.Start();
         p.BeginOutputReadLine();
         p.BeginErrorReadLine();
