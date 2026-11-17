@@ -14,7 +14,7 @@ internal static class AppInfo
 {
     /// 程序版本。安装器会把它写进注册表的 DisplayVersion，
     /// 启动器会把它显示在「设置 → 关于 → 版本号」。
-    public const string Version = "4.0.4beta";
+    public const string Version = "0.4.5.beta";
 
     /// 产品名 —— 窗口标题、注册表键、快捷方式、安装目录都用它。
     public const string Product = "LLLM Studio";

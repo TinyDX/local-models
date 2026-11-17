@@ -269,22 +269,23 @@ internal static class UpdaterCore
                 string s = sb.ToString();
                 // ★ 大小写都要认 —— 版本号从 0.3.5Beta 改成了 0.4.0beta，
                 //   只认大写 Beta 会导致「检测到的版本：无法识别」
-                // ★ 要认三种写法：
+                // ★ 要认这几种写法：
                 //   · 0.3.5Beta          老版（大写 Beta）
                 //   · 0.4.1beta          小写 beta
-                //   · 4.0.2beta-canary   canary 测试版
+                //   · 4.0.2beta-canary   编号笔误时期的 canary 包
+                //   · 0.4.5.beta         beta 前多一个点
                 //   漏了任何一种都会显示「检测到的版本：无法识别」。
-                if (Regex.IsMatch(s, @"^\d+\.\d+\.\d+[Bb]eta(-canary)?$")) return s;
+                if (Regex.IsMatch(s, @"^\d+\.\d+\.\d+\.?[Bb]eta(-canary)?$")) return s;
             }
         }
         catch { }
         return "";
     }
 
-    /// 比较版本号，a 比 b 新返回 true。形如 0.3.1Beta / 4.0.2beta-canary
+    /// 比较版本号，a 比 b 新返回 true。形如 0.3.1Beta / 0.4.5.beta / 4.0.2beta-canary
     ///
     /// canary 当作「同号里更旧的」处理：
-    ///   4.0.2beta-canary < 4.0.2beta
+    ///   0.4.2beta-canary < 0.4.2beta
     /// 这样正式版能把 canary 顶掉，反过来 canary 不会盖掉正式版。
     public static bool IsNewer(string a, string b)
     {
@@ -295,8 +296,8 @@ internal static class UpdaterCore
             string ra = Regex.Match(a, @"^\d+\.\d+\.\d+").Value;
             string rb = Regex.Match(b, @"^\d+\.\d+\.\d+").Value;
             if (ra.Length == 0 || rb.Length == 0) return a != b;
-            var va = new Version(ra);
-            var vb = new Version(rb);
+            var va = Normalize(ra);
+            var vb = Normalize(rb);
             if (va != vb) return va > vb;
 
             // 主版本号相同 → 看是不是 canary
@@ -306,6 +307,20 @@ internal static class UpdaterCore
             return !ca;                    // a 是正式版、b 是 canary → a 更新
         }
         catch { return a != b; }
+    }
+
+    /// 版本号归一化。
+    ///
+    /// ★ 为什么要这一步：
+    ///   中间有几版被误编号成 4.0.2 / 4.0.3 / 4.0.4（本意是 0.4.x），
+    ///   已经发到测试群了。如果照字面比较，4.0.3 > 0.4.5 恒成立 ——
+    ///   装了 4.0.3beta-canary 的人永远收不到 0.4.5 的更新。
+    ///   把那批 4.0.x 折成 0.0.x 看待，它们就正确地落在 0.4.5 之前。
+    private static Version Normalize(string baseVer)
+    {
+        var v = new Version(baseVer);
+        if (v.Major == 4 && v.Minor == 0) return new Version(0, 0, v.Build);
+        return v;
     }
 
     /// 杀掉安装目录里正在运行的程序（只杀这个目录里的，别处同名的不动）
