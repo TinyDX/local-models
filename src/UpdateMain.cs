@@ -1,4 +1,4 @@
-// UpdateMain.cs -- 更新器入口
+﻿// UpdateMain.cs -- 更新器入口
 using System;
 using System.IO;
 using System.Windows.Forms;
@@ -14,7 +14,7 @@ internal static class UpdateMain
         string newVer = AppInfo.Version;
 
         // ---- 找安装目录 ----
-        //   支持命令行直接指定：LocalModels-Update.exe /dir "D:\Local Models"
+        //   支持命令行直接指定：LLLM-Studio-Update.exe /dir "D:\Local Models"
         string dir = "";
         for (int i = 0; i < args.Length - 1; i++)
             if (args[i].Equals("/dir", StringComparison.OrdinalIgnoreCase))
@@ -28,8 +28,8 @@ internal static class UpdateMain
             // 自动找不到就问用户
             using (var dlg = new FolderBrowserDialog())
             {
-                dlg.Description = "没有自动找到 Local Models 的安装目录，请手动选择" +
-                                  "（里面应该有 Local Models.exe）";
+                dlg.Description = "没有自动找到 " + AppInfo.Product + " 的安装目录，请手动选择" +
+                                  "（里面应该有 " + AppInfo.LauncherExe + "）";
                 if (Directory.Exists(dir)) dlg.SelectedPath = dir;
                 if (dlg.ShowDialog() != DialogResult.OK || dlg.SelectedPath.Length == 0)
                     return;
@@ -38,10 +38,10 @@ internal static class UpdateMain
             if (!UpdaterCore.LooksInstalled(dir))
             {
                 MessageBox.Show(
-                    "这个目录里没有 Local Models.exe，不像是安装目录。\r\n\r\n" +
+                    "这个目录里没有 " + AppInfo.LauncherExe + "，不像是安装目录。\r\n\r\n" +
                     "选中的是：\r\n" + dir + "\r\n\r\n" +
-                    "请选择安装 Local Models 的那个文件夹。",
-                    "Local Models 更新程序", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    "请选择安装 " + AppInfo.Product + " 的那个文件夹。",
+                    AppInfo.Product + " 更新程序", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
         }

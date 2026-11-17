@@ -38,18 +38,25 @@ internal static class Uninstaller
         KillProcesses();
 
         log("[2/7] 删除快捷方式");
-        DeleteShortcut(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-            "Local Models.lnk", log);
-        DeleteShortcut(Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
-            "Local Models.lnk", log);
+        // ★ 新旧两套名字都要删 —— 老用户升级过后，桌面上可能两个 .lnk 都在
+        foreach (string name in new string[] { AppInfo.Product, AppInfo.LegacyProduct })
+        {
+            DeleteShortcut(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                name + ".lnk", log);
+            DeleteShortcut(Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
+                name + ".lnk", log);
+        }
         try
         {
-            string smDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.Programs), "Local Models");
-            if (Directory.Exists(smDir))
+            foreach (string name in new string[] { AppInfo.Product, AppInfo.LegacyProduct })
             {
-                Directory.Delete(smDir, true);
-                log("      已删除开始菜单文件夹");
+                string smDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Programs), name);
+                if (Directory.Exists(smDir))
+                {
+                    Directory.Delete(smDir, true);
+                    log("      已删除开始菜单文件夹：" + name);
+                }
             }
         }
         catch (Exception e) { log("      ⚠ " + e.Message); }
@@ -87,7 +94,7 @@ internal static class Uninstaller
     {
         string[] names = new string[]
         {
-            "Local Models", "ninfer-serve-86", "ninfer-serve-89", "ninfer-serve-120a"
+            AppInfo.Product, AppInfo.LegacyProduct, "ninfer-serve-86", "ninfer-serve-89", "ninfer-serve-120a"
         };
         foreach (string n in names)
         {
@@ -122,12 +129,17 @@ internal static class Uninstaller
                 @"Software\Microsoft\Windows\CurrentVersion\Uninstall", true))
             {
                 if (k == null) return;
-                if (k.OpenSubKey("Local Models") != null)
+                int removed = 0;
+                foreach (string key in new string[] { AppInfo.UninstallKey, AppInfo.LegacyProduct })
                 {
-                    k.DeleteSubKeyTree("Local Models", false);
-                    log("      已移除卸载项");
+                    if (k.OpenSubKey(key) != null)
+                    {
+                        k.DeleteSubKeyTree(key, false);
+                        log("      已移除卸载项：" + key);
+                        removed++;
+                    }
                 }
-                else log("      无需移除");
+                if (removed == 0) log("      无需移除");
             }
         }
         catch (Exception e) { log("      ⚠ " + e.Message); }
@@ -244,7 +256,7 @@ internal sealed class UninstallForm : Form
         _dir = dir;
         P = Palette.For(ThemeIsDark());
 
-        Text = "Local Models 卸载程序 " + AppInfo.Version;
+        Text = AppInfo.Product + " 卸载程序 " + AppInfo.Version;
         ClientSize = new Size(S2(680), S2(500));
         MinimumSize = new Size(S2(640), S2(460));
         StartPosition = FormStartPosition.CenterScreen;
@@ -258,7 +270,7 @@ internal sealed class UninstallForm : Form
         var head = new Panel { Dock = DockStyle.Top, Height = S2(78), BackColor = P.Header };
         head.Controls.Add(new Label
         {
-            Text = "卸载 Local Models",
+            Text = "卸载 " + AppInfo.Product,
             Font = FontOf(15f, FontStyle.Bold), ForeColor = P.Fg, AutoSize = true,
             Location = new Point(S2(22), S2(14)), BackColor = P.Header
         });
@@ -414,7 +426,7 @@ internal sealed class UninstallForm : Form
     {
         if (_working)
         {
-            var r = MessageBox.Show("卸载正在进行，确定要退出吗？", "Local Models 卸载程序",
+            var r = MessageBox.Show("卸载正在进行，确定要退出吗？", AppInfo.Product + " 卸载程序",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
             if (r != DialogResult.Yes) { e.Cancel = true; return; }
         }
@@ -465,7 +477,7 @@ internal static class Program
         if (quiet)
         {
             // 静默卸载：不弹界面，保留 models
-            Console.WriteLine("Local Models 静默卸载：" + dir);
+            Console.WriteLine(AppInfo.Product + " 静默卸载：" + dir);
             int fails = Uninstaller.Run(dir, false, delegate(string s) { Console.WriteLine(s); });
             Environment.ExitCode = fails;
             return;

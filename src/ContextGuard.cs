@@ -31,14 +31,24 @@ internal static class ContextGuard
         LastOverflowAt = DateTime.MinValue;
     }
 
-    /// 给人看的一句提醒
+    /// 给人看的提醒（会显示在「控制模型」页的日志里）
     public static string WarnText()
     {
         if (LastOverflowTokens <= 0) return "";
-        return "⚠ 上次请求的上下文有 " + LastOverflowTokens.ToString("N0")
-             + " token，超过设备池的 " + LastPoolTokens.ToString("N0")
-             + " token —— 超出部分的中间内容会被丢弃，回答可能不可信。"
-             + "建议缩短对话，或在设置里调大 KV 池。";
+
+        string s = "⚠ 上次请求的上下文有 " + LastOverflowTokens.ToString("N0")
+                 + " token，超过设备池的 " + LastPoolTokens.ToString("N0")
+                 + " token —— 超出部分的中间内容会被丢弃，回答可能不可信。";
+
+        // 给出可操作的建议，而不只是提示"出问题了"
+        int poolPages = Kvmem.DevicePoolPages((int)LastPoolTokens);
+        s += "\r\n  建议：";
+        if (poolPages < 256)
+            s += "开启「磁盘 KV 缓存」（设置 → 磁盘 KV 缓存），或缩短对话、少挂 tools。";
+        else
+            s += "把「环绕窗口」调到 " + LastPoolTokens.ToString("N0")
+               + " token 以内（设置 → KVMem 缓存），或开启「磁盘 KV 缓存」。";
+        return s;
     }
 
     /// 引擎吐出一行日志时调用。只有超池那条 warning 会被传进来。

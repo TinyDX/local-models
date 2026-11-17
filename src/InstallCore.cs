@@ -1,7 +1,7 @@
-// InstallCore.cs -- 安装动作的核心实现
+﻿// InstallCore.cs -- 安装动作的核心实现
 //
 // 抽出来的目的：
-//   1) 界面（InstallerForm）和静默模式（Bonsai2-Setup.exe /silent）共用同一套逻辑，
+//   1) 界面（InstallerForm）和静默模式（LLLM-Studio-Setup.exe /silent）共用同一套逻辑，
 //      避免两处实现分叉。
 //   2) 可以脱离 GUI 自动验证。
 //
@@ -282,6 +282,40 @@ internal static class InstallCore
         log("已释放 " + Math.Round(total / 1073741824.0, 2) + " GB");
         log("");
 
+        // ---- 从旧版 "Local Models" 迁移用户数据 ----
+        // 位置很讲究：程序文件已经释放完（新目录存在），但注册表还没写。
+        // 这样迁移失败也不会留下半吊子的注册表项。
+        try
+        {
+            var leg = LegacyMigration.Detect();
+            if (leg.Found)
+            {
+                log("");
+                log("检测到旧版安装：" + leg.Dir);
+                if (leg.ModelCount > 0)
+                    log("  其中模型 " + leg.ModelCount + " 个（"
+                        + Math.Round(leg.DataBytes / 1073741824.0, 2) + " GB）");
+                log("  正在迁移用户数据…");
+
+                if (LegacyMigration.Migrate(leg.Dir, ctx.TargetDir, log))
+                {
+                    log("  迁移完成");
+                    LegacyMigration.Cleanup(leg.Dir, log);
+                    log("  旧版已清理");
+                }
+                else
+                {
+                    log("  ⚠ 迁移未完成 —— 旧数据仍在 " + leg.Dir);
+                    log("  可以手动把 models\\ 和 *.json 复制过来");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            log("迁移出错（不影响本次安装）：" + ex.Message);
+        }
+        log("");
+
         WriteConfig(ctx, log);
         // ★ 两个快捷方式选项是独立的 —— 只要有一个要建就得进这个方法。
         //   原来只判断 CreateShortcut，用户取消桌面但留着开始菜单时会两个都不建。
@@ -343,8 +377,8 @@ internal static class InstallCore
             if (ctx.CreateShortcut)
             {
                 string desk = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-                MakeLnk(Path.Combine(desk, "Local Models.lnk"), launcher, ctx.TargetDir);
-                log("已创建桌面快捷方式：Local Models.lnk");
+                MakeLnk(Path.Combine(desk, AppInfo.Product + ".lnk"), launcher, ctx.TargetDir);
+                log("已创建桌面快捷方式：" + AppInfo.Product + ".lnk");
             }
             else log("已跳过桌面快捷方式（按你的选择）");
 
@@ -358,9 +392,9 @@ internal static class InstallCore
                 try
                 {
                     string smDir = Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.Programs), "Local Models");
+                        Environment.GetFolderPath(Environment.SpecialFolder.Programs), AppInfo.Product);
                     Directory.CreateDirectory(smDir);
-                    MakeLnk(Path.Combine(smDir, "Local Models.lnk"), launcher, ctx.TargetDir);
+                    MakeLnk(Path.Combine(smDir, AppInfo.Product + ".lnk"), launcher, ctx.TargetDir);
                     log("已创建开始菜单快捷方式（卸载走「设置 → 应用」）");
                 }
                 catch (Exception e) { log("⚠ 开始菜单快捷方式失败：" + e.Message); }
@@ -383,19 +417,23 @@ internal static class InstallCore
         st.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { target });
         st.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { workDir });
         st.InvokeMember("IconLocation", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { target + ",0" });
-        st.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { "Local Models" });
+        st.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { AppInfo.Product });
         st.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, sc, null);
     }
 
     public static string FindLauncher(string dir)
     {
-        string preferred = Path.Combine(dir, "Local Models.exe");
+        string preferred = Path.Combine(dir, AppInfo.LauncherExe);
         if (File.Exists(preferred)) return preferred;
 
         foreach (string f in Directory.GetFiles(dir, "*.exe"))
         {
             string n = Path.GetFileName(f);
-            if (n.Equals("Bonsai2-Setup.exe", StringComparison.OrdinalIgnoreCase)) continue;
+            // 跳过非启动器的 exe：安装器、更新器、卸载器、引擎（新旧名字都认）
+            if (n.Equals(AppInfo.SetupExe, StringComparison.OrdinalIgnoreCase)) continue;
+            if (n.Equals(AppInfo.UpdateExe, StringComparison.OrdinalIgnoreCase)) continue;
+            if (n.Equals(AppInfo.LegacySetupExe, StringComparison.OrdinalIgnoreCase)) continue;
+            if (n.Equals(AppInfo.LegacyUpdateExe, StringComparison.OrdinalIgnoreCase)) continue;
             if (n.Equals("Uninstall.exe", StringComparison.OrdinalIgnoreCase)) continue;
             if (n.StartsWith("ninfer-serve-", StringComparison.OrdinalIgnoreCase)) continue;
             return f;
@@ -413,13 +451,13 @@ internal static class InstallCore
                 @"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + AppInfo.UninstallKey))
             {
                 if (k == null) { log("⚠ 无法写入注册表，跳过「应用」列表注册"); return; }
-                k.SetValue("DisplayName", "Local Models 本地推理");
+                k.SetValue("DisplayName", AppInfo.Product + " 本地推理");
                 k.SetValue("UninstallString", "\"" + uninst + "\"");
                 k.SetValue("QuietUninstallString", "\"" + uninst + "\" --quiet");
                 string launcher = FindLauncher(ctx.TargetDir);
                 if (launcher != null) k.SetValue("DisplayIcon", launcher + ",0");
                 k.SetValue("InstallLocation", ctx.TargetDir);
-                k.SetValue("Publisher", "Local Models");
+                k.SetValue("Publisher", AppInfo.Product);
                 // ★ 版本号取自 Version.cs，和启动器「关于」页显示的完全一致
                 //   （原来这里写死 "1.0"，界面上却是 0.2.0Beta，对不上）
                 k.SetValue("DisplayVersion", AppInfo.Version);

@@ -1,4 +1,4 @@
-// Updater.cs -- 轻量更新器（LocalModels-Update.exe）
+// Updater.cs -- 轻量更新器（LLLM-Studio-Update.exe）
 //
 // 为什么要有它：完整包 4.54 GB，其中 4.2 GB 是三个引擎 exe。
 // 但更新程序本身只需要替换几个小文件（≈300 KB）——
@@ -30,11 +30,38 @@ using System.Windows.Forms;
 
 internal static class UpdaterCore
 {
+    /// 卸载注册表根
+    private const string UninstallRoot =
+        @"Software\Microsoft\Windows\CurrentVersion\Uninstall\";
+
+    /// 目录里有没有启动器（新旧两种文件名都认）。
+    /// 老用户升级时目录里还叫 "Local Models.exe"；新版是 "LLLM Studio.exe"。
+    public static bool HasLauncher(string dir)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return false;
+            return File.Exists(Path.Combine(dir, AppInfo.LauncherExe))
+                || File.Exists(Path.Combine(dir, AppInfo.LegacyLauncherExe));
+        }
+        catch { return false; }
+    }
+
+    /// 找出该目录里的启动器路径（优先新版名字）。
+    public static string LauncherPath(string dir)
+    {
+        string n = Path.Combine(dir, AppInfo.LauncherExe);
+        if (File.Exists(n)) return n;
+        string o = Path.Combine(dir, AppInfo.LegacyLauncherExe);
+        if (File.Exists(o)) return o;
+        return n;
+    }
+
     /// 要替换的文件（相对安装目录的路径 → 内嵌资源名）
     /// 只列**程序文件**，用户数据和引擎不在其中。
     public static readonly string[][] Files = new string[][]
     {
-        new string[] { "Local Models.exe",      "Local Models.exe" },
+        new string[] { AppInfo.LauncherExe,      "LLLM Studio.exe" },
         new string[] { "Uninstall.exe",         "Uninstall.exe" },
         new string[] { "webui\\index.html",     "index.html" }
     };
@@ -44,6 +71,76 @@ internal static class UpdaterCore
     {
         new string[] { "更新日志.txt", "更新日志.txt" }
     };
+
+    /// 更新完成后要**删掉**的旧文件（改名遗留）。
+    ///
+    /// ★ 这是本版最要紧的修复：
+    ///   0.4.1beta 把启动器从 "Local Models.exe" 改名成 "LLLM Studio.exe"，
+    ///   但更新器只写入新文件、没删旧文件 —— 结果安装目录里同时躺着两个 exe。
+    ///   用户双击的往往是旧的（桌面快捷方式还指着它），
+    ///   于是更新后看到的还是老界面，以为更新没生效。
+    ///
+    /// 这些文件只在**新版对应文件已经就位**之后才删，避免把用户唯一能启动的程序删掉。
+    public static readonly string[] ObsoleteFiles = new string[]
+    {
+        AppInfo.LegacyLauncherExe      // "Local Models.exe"
+    };
+
+    /// 修桌面/开始菜单的快捷方式：改名后旧 .lnk 指向的 exe 已经不存在了。
+    /// 找不到旧 lnk 也没关系（用户可能是从安装目录直接启动的）。
+    public static void FixShortcuts(string dir, Action<string> log)
+    {
+        try
+        {
+            string launcher = Path.Combine(dir, AppInfo.LauncherExe);
+            if (!File.Exists(launcher)) return;
+
+            var dirs = new List<string>();
+            try { dirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)); } catch { }
+            try { dirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory)); } catch { }
+            try
+            {
+                string sm = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Programs), AppInfo.LegacyProduct);
+                if (Directory.Exists(sm)) dirs.Add(sm);
+            }
+            catch { }
+
+            // 旧 lnk 的名字是 "Local Models.lnk"
+            foreach (string d in dirs)
+            {
+                if (string.IsNullOrEmpty(d) || !Directory.Exists(d)) continue;
+                string oldLnk = Path.Combine(d, AppInfo.LegacyProduct + ".lnk");
+                if (!File.Exists(oldLnk)) continue;
+
+                try
+                {
+                    // 删旧建新 —— 用 WScript.Shell 创建，和安装器一致
+                    File.Delete(oldLnk);
+                    string newLnk = Path.Combine(d, AppInfo.Product + ".lnk");
+                    Type t = Type.GetTypeFromProgID("WScript.Shell");
+                    if (t != null)
+                    {
+                        object sh = Activator.CreateInstance(t);
+                        object sc = t.InvokeMember("CreateShortcut",
+                            System.Reflection.BindingFlags.InvokeMethod, null, sh, new object[] { newLnk });
+                        Type st = sc.GetType();
+                        st.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { launcher });
+                        st.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { dir });
+                        st.InvokeMember("IconLocation", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { launcher + ",0" });
+                        st.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { AppInfo.Product });
+                        st.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, sc, null);
+                    }
+                    log("✓ 已更新快捷方式：" + Path.GetFileName(newLnk));
+                }
+                catch (Exception ex)
+                {
+                    log("⚠ 快捷方式更新失败：" + ex.Message);
+                }
+            }
+        }
+        catch { }
+    }
 
     // ---------------- 引擎更新 ----------------
     //
@@ -102,7 +199,7 @@ internal static class UpdaterCore
         try
         {
             using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Local Models"))
+                UninstallRoot + AppInfo.UninstallKey) ?? Microsoft.Win32.Registry.CurrentUser.OpenSubKey(UninstallRoot + AppInfo.LegacyProduct))
             {
                 if (k == null) return "";
                 object v = k.GetValue("InstallLocation");
@@ -122,23 +219,23 @@ internal static class UpdaterCore
             string here = Path.GetDirectoryName(Application.ExecutablePath);
             if (string.IsNullOrEmpty(here)) return "";
             // 自己就放在安装目录里
-            if (File.Exists(Path.Combine(here, "Local Models.exe"))) return here;
+            if (HasLauncher(here)) return here;
             // 自己旁边有个 payload\（跟完整包放一起了）
             string sub = Path.Combine(here, "payload");
-            if (File.Exists(Path.Combine(sub, "Local Models.exe"))) return sub;
+            if (HasLauncher(sub)) return sub;
         }
         catch { }
         return "";
     }
 
-    /// 判断一个目录像不像 Local Models 的安装目录
+    /// 判断一个目录像不像安装目录（新旧两种 exe 名都认）
     public static bool LooksInstalled(string dir)
     {
         try
         {
             if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return false;
             // 启动器在，就算装上过（引擎可能被用户删了，不该因此拒绝更新）
-            return File.Exists(Path.Combine(dir, "Local Models.exe"));
+            return HasLauncher(dir);
         }
         catch { return false; }
     }
@@ -151,7 +248,7 @@ internal static class UpdaterCore
     {
         try
         {
-            string exe = Path.Combine(dir, "Local Models.exe");
+            string exe = LauncherPath(dir);
             if (!File.Exists(exe)) return "";
             byte[] b = File.ReadAllBytes(exe);
 
@@ -172,14 +269,23 @@ internal static class UpdaterCore
                 string s = sb.ToString();
                 // ★ 大小写都要认 —— 版本号从 0.3.5Beta 改成了 0.4.0beta，
                 //   只认大写 Beta 会导致「检测到的版本：无法识别」
-                if (Regex.IsMatch(s, @"^\d+\.\d+\.\d+[Bb]eta$")) return s;
+                // ★ 要认三种写法：
+                //   · 0.3.5Beta          老版（大写 Beta）
+                //   · 0.4.1beta          小写 beta
+                //   · 4.0.2beta-canary   canary 测试版
+                //   漏了任何一种都会显示「检测到的版本：无法识别」。
+                if (Regex.IsMatch(s, @"^\d+\.\d+\.\d+[Bb]eta(-canary)?$")) return s;
             }
         }
         catch { }
         return "";
     }
 
-    /// 比较版本号，a 比 b 新返回 true。形如 0.3.1Beta
+    /// 比较版本号，a 比 b 新返回 true。形如 0.3.1Beta / 4.0.2beta-canary
+    ///
+    /// canary 当作「同号里更旧的」处理：
+    ///   4.0.2beta-canary < 4.0.2beta
+    /// 这样正式版能把 canary 顶掉，反过来 canary 不会盖掉正式版。
     public static bool IsNewer(string a, string b)
     {
         try
@@ -191,7 +297,13 @@ internal static class UpdaterCore
             if (ra.Length == 0 || rb.Length == 0) return a != b;
             var va = new Version(ra);
             var vb = new Version(rb);
-            return va > vb;
+            if (va != vb) return va > vb;
+
+            // 主版本号相同 → 看是不是 canary
+            bool ca = a.IndexOf("canary", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool cb = b.IndexOf("canary", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (ca == cb) return false;   // 同为 canary 或同为正式 → 不算更新
+            return !ca;                    // a 是正式版、b 是 canary → a 更新
         }
         catch { return a != b; }
     }

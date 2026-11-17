@@ -150,10 +150,30 @@ internal sealed class BonsaiTray : ApplicationContext
     ///   graphMiB —— CUDA 图态预留
     private static List<string> EngineArgsFor(string modelId, int kvCapacity, int graphMiB)
     {
+        return EngineArgsFor(modelId, kvCapacity, graphMiB, false);
+    }
+
+    /// noCudaGraph：加 --no-cuda-graph，让引擎跳过 CUDA 图捕获。
+    /// 驱动升级后图捕获/更新失败时（cudaErrorGraphExecUpdateFailure）用它兜底，
+    /// 实测推理速度代价约等于 0。
+    private static List<string> EngineArgsFor(string modelId, int kvCapacity, int graphMiB, bool noCudaGraph)
+    {
         var a = new List<string>();
         for (int i = 0; i < EngineArgTemplate.Length; i++)
         {
             string s = EngineArgTemplate[i];
+
+            // 关掉 CUDA 图时，必须**整对省略** --cuda-graph-allowance-mib N。
+            // 引擎的硬校验（实测）：
+            //   ninfer-serve: --cuda-graph-allowance-mib requires CUDA graphs
+            //                 (omit --no-cuda-graph)
+            // 漏了这一步引擎会直接退出，报 usage。
+            if (noCudaGraph && s == "--cuda-graph-allowance-mib")
+            {
+                if (i + 1 < EngineArgTemplate.Length) i++;   // 连它的数值一起跳过
+                continue;
+            }
+
             if (s == "{model}") a.Add(modelId);
             else if (s == "{kv}")
             {
@@ -192,6 +212,12 @@ internal sealed class BonsaiTray : ApplicationContext
             a.Add("--disk-kv-gib");
             a.Add(DiskKv.Gib.ToString());
             a.Add("--disk-kv-restore");
+        }
+
+        // 关掉 CUDA 图 —— 驱动升级后图更新失败时的兜底（见 LaunchConfig.NoCudaGraph）
+        if (noCudaGraph)
+        {
+            a.Add("--no-cuda-graph");
         }
         return a;
     }
@@ -288,7 +314,7 @@ internal sealed class BonsaiTray : ApplicationContext
         _tray = new NotifyIcon
         {
             Icon = LoadIcon(),
-            Text = "Local Models",
+            Text = AppInfo.Product,
             ContextMenuStrip = BuildTrayMenu(),
             Visible = true
         };
@@ -361,7 +387,9 @@ internal sealed class BonsaiTray : ApplicationContext
         miTheme.DropDownItems.Add(_miThemeDark);
         // 「设置…」固定跳到设置页的第一个选项；「关于…」跳到「关于」
         var miSettings = new ToolStripMenuItem("设置…", null, (s, e) => ShowSettingsPage(0));
-        var miAbout = new ToolStripMenuItem("关于…", null, (s, e) => ShowSettingsPage(5));
+        // 索引必须与 SetNames 顺序一致：「关于」现在是第 8 项（索引 7）。
+        // 之前写死 5，跳过去其实是「外观」页 —— 顺手修正。
+        var miAbout = new ToolStripMenuItem("关于…", null, (s, e) => ShowSettingsPage(7));
 
         var menu = new Win11Menu(C);
         menu.Items.Add(_miStatus);
@@ -541,9 +569,15 @@ internal sealed class BonsaiTray : ApplicationContext
         var f = new W11Form
         {
             // 标题不含模型名 —— 本程序适配任意 .ninfer 模型
-            Text = "Local Models",
+            Text = AppInfo.Product,
             ClientSize = new Size(S(760), S(600)),
-            MinimumSize = new Size(S(640), S(480)),
+            // ★ 最小尺寸不能只按「看起来能放」定。
+            //   设置页的横向预算：
+            //     左边距 20 + 左侧导航 196 + 内容左内边距 22 + 内容 + 右边距 20
+            //   「关于」页的卡片里最长的文字（第三方许可那几行英文）大约要 420px，
+            //   加起来 ≈ 680px。再留点余量取 720，否则窄窗口下文字会被截断。
+            //   高度同理：「控制模型」页的日志框至少要 300px 才有意义。
+            MinimumSize = new Size(S(720), S(520)),
             StartPosition = FormStartPosition.CenterScreen,
             Icon = _tray.Icon,
             BackColor = C.Bg,
@@ -563,7 +597,7 @@ internal sealed class BonsaiTray : ApplicationContext
             {
                 e.Cancel = true;
                 f.Hide();
-                Balloon(1500, "Local Models", "窗口已收起，程序仍在托盘运行。右键图标可退出。", ToolTipIcon.Info);
+                Balloon(1500, AppInfo.Product, "窗口已收起，程序仍在托盘运行。右键图标可退出。", ToolTipIcon.Info);
             }
         };
 
@@ -579,7 +613,7 @@ internal sealed class BonsaiTray : ApplicationContext
         TryDoubleBuffer(head);
         head.Controls.Add(new Label
         {
-            Text = "Local Models",
+            Text = AppInfo.Product,
             Font = UiFont(17F, FontStyle.Bold), ForeColor = C.Fg, AutoSize = true,
             Location = new Point(S(26), S(18)), BackColor = C.Header
         });
@@ -805,6 +839,10 @@ internal sealed class BonsaiTray : ApplicationContext
         rows.Add(new string[] { "磁盘 KV 缓存", DiskKv.Enabled
             ? "已开启 · " + DiskKv.EffectiveDir(Root) + " · 上限 " + DiskKv.Gib + " GB   （设置页可改）"
             : "关闭 —— 上下文受显存 + 内存限制（设置页可开）" });
+        // CUDA 图 —— 设置页「引擎兼容」改了这里要跟着变
+        rows.Add(new string[] { "CUDA 图", cfg.NoCudaGraph
+            ? "已关闭 —— 驱动不兼容时的兼容模式（设置页可开）"
+            : "开启（默认）—— 推理最快   （设置页可关）" });
         // 物理上下文 = 三层 KV 加起来**实际能装**多少（与下面的「逻辑上下文」相对）。
         // 逻辑上下文是"声明上限"，固定值；这一项才会随磁盘 KV 开关变化。
         // 每 token 字节数从引擎日志的 capacity 行现算 —— 不同模型差别很大
@@ -1281,10 +1319,66 @@ internal sealed class BonsaiTray : ApplicationContext
 
     /// 左侧二级菜单的项（顺序即显示顺序）
     private static readonly string[] SetNames = new string[]
-        { "推理等级", "磁盘 KV 缓存", "KVMem 缓存", "局域网访问控制", "API 密钥", "外观", "关于" };
+        { "推理等级", "磁盘 KV 缓存", "KVMem 缓存", "引擎兼容", "局域网访问控制", "API 密钥", "外观", "关于" };
 
     private W11NavItem[] _navItems;
     private Panel[] _setPages;
+    /// 左侧导航所有项叠起来的总高度（滚动范围用）
+    private int _navTotalHeight;
+    /// 左侧导航当前的滚动偏移（0 = 顶部，负值 = 往下滚）
+    private int _navScrollY;
+    /// 左侧导航容器 —— RelayoutNav 要读它的高度
+    private Panel _navHost;
+
+    /// 把 _navScrollY 夹到合法范围：顶部不能露出空白，底部不能滚过头。
+    private void ClampNavScroll()
+    {
+        try
+        {
+            if (_navHost == null || _navHost.IsDisposed) return;
+            int viewH = _navHost.ClientSize.Height;
+            int contentH = _navTotalHeight;
+
+            if (contentH <= viewH) { _navScrollY = 0; return; }
+
+            int minY = viewH - contentH;    // 最负能到多少
+            if (_navScrollY > 0) _navScrollY = 0;
+            if (_navScrollY < minY) _navScrollY = minY;
+        }
+        catch { }
+    }
+
+    /// 按 _navScrollY 重新摆放导航项。
+    private void RelayoutNav()
+    {
+        try
+        {
+            if (_navItems == null) return;
+            for (int i = 0; i < _navItems.Length; i++)
+            {
+                if (_navItems[i] == null || _navItems[i].IsDisposed) continue;
+                _navItems[i].Top = _navScrollY + i * S(46);
+            }
+        }
+        catch { }
+    }
+
+    /// 让子控件把滚轮事件转给父容器 —— 鼠标停在选项上时也能滚。
+    private MouseEventHandler nav_MouseWheelForward(Panel nav)
+    {
+        return delegate(object s, MouseEventArgs e)
+        {
+            try
+            {
+                if (_navTotalHeight <= nav.ClientSize.Height) return;
+                _navScrollY += (-e.Delta / 120) * S(48);
+                ClampNavScroll();
+                RelayoutNav();
+            }
+            catch { }
+        };
+    }
+
     private W11OptionRow[] _themeRows;
     private W11DropDown _effortCombo;
     private Panel _keyListHost;
@@ -1301,14 +1395,24 @@ internal sealed class BonsaiTray : ApplicationContext
         };
 
         // ---------- 左侧：二级菜单 ----------
+        //
+        // ★ 窗口矮的时候 7 个选项放不下，最后几项（「外观」「关于」）就点不到了。
+        //   这里自己管滚动：不用 AutoScroll（它会画滚动条），
+        //   直接用鼠标滚轮把子控件的 Top 整体上移/下移，条目超出范围就裁掉。
+        //
+        // 为什么不用 AutoScroll + 隐藏滚动条：
+        //   AutoScroll 自己维护滚动位置，跟手动改 Top 会打架 ——
+        //   改完 Top 它又会把内容弹回原位。
         var nav = new Panel { Dock = DockStyle.Left, Width = S(196), BackColor = C.Bg };
+        _navHost = nav;
+
         _navItems = new W11NavItem[SetNames.Length];
         int ny = 0;
         for (int i = 0; i < SetNames.Length; i++)
         {
             var it = new W11NavItem
             {
-                Text = SetNames[i], Left = 0, Top = ny, Width = nav.Width, Height = S(42),
+                Text = SetNames[i], Left = 0, Top = ny, Width = S(196), Height = S(42),
                 Bg = C.Bg, Card = C.Card, CardAlt = C.CardAlt,
                 Accent = C.Accent, Fg = C.Fg, Dim = C.Dim, Font = UiFont(10.5F)
             };
@@ -1318,10 +1422,24 @@ internal sealed class BonsaiTray : ApplicationContext
             _navItems[i] = it;
             ny += S(46);
         }
+        _navTotalHeight = ny;
+        _navScrollY = 0;
+
         nav.Resize += delegate
         {
             for (int i = 0; i < _navItems.Length; i++) _navItems[i].Width = nav.ClientSize.Width;
+            ClampNavScroll();
         };
+        // 滚轮滚动（唯一的滚动方式，没有滚动条）
+        nav.MouseWheel += delegate(object s, MouseEventArgs e)
+        {
+            if (_navTotalHeight <= nav.ClientSize.Height) return;   // 放得下就不滚
+            _navScrollY += (-e.Delta / 120) * S(48);
+            ClampNavScroll();
+            RelayoutNav();
+        };
+        // 鼠标停在某个选项上时，滚轮事件会被那个子控件吃掉 —— 也挂一遍
+        foreach (var it in _navItems) it.MouseWheel += nav_MouseWheelForward(nav);
 
         // ---------- 右侧：三级内容 ----------
         var content = new Panel
@@ -1330,15 +1448,17 @@ internal sealed class BonsaiTray : ApplicationContext
             Padding = new Padding(S(22), 0, 0, 0)
         };
         // 顺序必须与上面的 SetNames 一一对应：
-        //   0 推理等级 · 1 局域网访问控制 · 2 API 密钥 · 3 外观 · 4 关于
+        //   0 推理等级 · 1 磁盘 KV 缓存 · 2 KVMem 缓存 · 3 引擎兼容
+        //   4 局域网访问控制 · 5 API 密钥 · 6 外观 · 7 关于
         _setPages = new Panel[SetNames.Length];
         _setPages[0] = BuildReasoningPage();
-        _setPages[2] = BuildKvmemPage();
-        _setPages[3] = BuildAccessPage();
-        _setPages[4] = BuildKeysPage();
-        _setPages[5] = BuildAppearancePage();
         _setPages[1] = BuildDiskKvPage();
-        _setPages[6] = BuildAboutPage();
+        _setPages[2] = BuildKvmemPage();
+        _setPages[3] = BuildEngineCompatPage();
+        _setPages[4] = BuildAccessPage();
+        _setPages[5] = BuildKeysPage();
+        _setPages[6] = BuildAppearancePage();
+        _setPages[7] = BuildAboutPage();
         for (int i = 0; i < _setPages.Length; i++)
         {
             _setPages[i].Dock = DockStyle.Fill;
@@ -1369,8 +1489,9 @@ internal sealed class BonsaiTray : ApplicationContext
         if (idx == 0) RefreshReasoningRows();   // 推理等级
         if (idx == 1) RefreshDiskKvRows();      // 磁盘 KV 缓存
         if (idx == 2) RefreshKvmemRows();       // KVMem 缓存
-        if (idx == 4) RefreshKeyRows();         // API 密钥
-        if (idx == 5) RefreshAppearanceRows();  // 外观
+        if (idx == 3) RefreshEngineCompatRows();// 引擎兼容
+        if (idx == 5) RefreshKeyRows();         // API 密钥
+        if (idx == 6) RefreshAppearanceRows();  // 外观
         // 刚显示出来的这一页：滚动条刷深色 + 去掉横向那条
         DarkScrollbarsSoon();
         ApplyScrollbarStyleSoon();
@@ -2641,15 +2762,26 @@ internal sealed class BonsaiTray : ApplicationContext
             var cfg = LaunchConfig.Load(Root);
             long need = (long)Kvmem.HostMiBFor(Kvmem.Window);
             long have = cfg.HostKvMiB;
-            bool warn = need > have;
+            bool hostWarn = need > have;
+
+            // ★ 环绕窗口 vs 设备池：窗口过大时长对话会报 context cache exhausted。
+            //   这个检查比「主机池够不够」更关键 —— 主机池只管换页落点，
+            //   设备池才决定「一次能装多少 token」。
+            string winWarn = Kvmem.CheckWindow(Kvmem.Window, cfg.KvCapacity);
 
             _kvEst.Text = "窗口 " + Kvmem.Window.ToString("N0") + " token · 取回 " + Kvmem.Retrieve.ToString("N0") + " token\r\n"
                         + "· 显存：32 MiB（固定，不受窗口影响）\r\n"
                         + "· 内存索引：256 MiB（引擎编译期固定，非本页可调）\r\n"
+                        + "· 设备池：" + cfg.KvCapacity.ToString("N0") + " token（"
+                        + Kvmem.DevicePoolPages(cfg.KvCapacity) + " 页，"
+                        + Kvmem.TokensPerPage + " token/页）\r\n"
                         + "· 主机 KV 池：当前 " + have + " MiB，本窗口估算需约 " + need + " MiB\r\n"
-                        + (warn ? "⚠ 估算需求超过主机池 —— 引擎可能拒绝启动，需调大 --host-kv-mib"
-                                : "✓ 主机池看起来够用（估算为经验值，实际以下次载入的日志为准）");
-            _kvEst.ForeColor = warn ? C.Amber : C.Dim;
+                        + (winWarn.Length > 0 ? winWarn
+                           : (hostWarn ? "⚠ 估算需求超过主机池 —— 引擎可能拒绝启动，需调大 --host-kv-mib"
+                                       : "✓ 窗口与主机池看起来都够用（估算为经验值，实际以下次载入的日志为准）"));
+
+            _kvEst.ForeColor = (winWarn.Length > 0) ? C.Amber
+                             : (hostWarn ? C.Amber : C.Dim);
 
             // 文字行数可能变了（警告那行更长），重新量一次高度，
             // 否则末行会被卡片下沿裁掉。
@@ -2663,6 +2795,111 @@ internal sealed class BonsaiTray : ApplicationContext
             }
         }
         catch { }
+    }
+
+    // ---------- 三级：引擎兼容（CUDA 图） ----------
+    //
+    // 为什么单独给一页：
+    //   CUDA 图是引擎启动时捕获一次、之后反复执行的加速手段。但新版显卡驱动
+    //   （实测 NVIDIA 621 系列）会改变内核参数布局，让图更新失败：
+    //     CUDA Graph executable update failed: cudaErrorGraphExecUpdateFailure (update result 5)
+    //   引擎随即 FATAL 退出，表现就是"模型载不起来"。
+    //
+    //   程序检测到这个错误会自动关掉图并记住（见 StartEngineWithRetry），
+    //   但**用户得有办法再打开** —— 否则换了驱动、或者换了张卡，就永远回不去
+    //   最快的那条路。这一页就是给这个用的。
+    private W11DropDown _cudaCombo;
+    private Label _cudaState;
+
+    private Panel BuildEngineCompatPage()
+    {
+        var p = new Panel { BackColor = C.Bg, AutoScroll = true };
+        AddPageHeader(p, "引擎兼容",
+            "显卡驱动升级后模型载不起来时，多半是 CUDA 图不兼容。这里可以手动开关。");
+
+        var cfg = LaunchConfig.Load(Root);
+
+        p.Controls.Add(new Label
+        {
+            Text = "CUDA 图", AutoSize = true, Location = new Point(0, S(70)),
+            Font = UiFont(9.5F), ForeColor = C.Dim, BackColor = C.Bg
+        });
+
+        _cudaCombo = new W11DropDown
+        {
+            Left = 0, Top = S(92), Width = S(520),
+            Titles = new string[] { "开启（默认，最快）", "关闭 —— 驱动不兼容时用" },
+            Subs = new string[]
+            {
+                "启动时捕获一遍计算图，之后反复复用，推理最快",
+                "跳过图捕获。新版驱动（如 NVIDIA 621 系列）上必须关，否则模型载不起来"
+            },
+            Selected = cfg.NoCudaGraph ? 1 : 0,
+            Bg = C.Bg, Fill = C.Card, Card = C.Card, Line = C.Line,
+            Fg = C.Fg, Dim = C.Dim, Accent = C.Accent,
+            Font = UiFont(10.5F), BackColor = C.Bg
+        };
+        _cudaCombo.Picked += delegate(int idx)
+        {
+            bool no = (idx == 1);
+            bool saved = LaunchConfig.SaveNoCudaGraph(Root, no);
+            RefreshEngineCompatRows();
+            RefreshInfoTab();
+            Log("CUDA 图已" + (no ? "关闭" : "开启") + "（下次载入模型时生效）"
+                + (saved ? "" : "  ⚠ 写不进 launch-config.json，可能是安装目录没有写权限"));
+        };
+        Tip.SetToolTip(_cudaCombo,
+            "CUDA 图是启动时捕获一次、之后反复执行的加速手段。\r\n" +
+            "驱动升级后内核参数布局可能变化，导致图更新失败：\r\n" +
+            "  cudaErrorGraphExecUpdateFailure (update result 5)\r\n" +
+            "这时引擎会直接退出、模型载不起来。关掉图即可正常启动，\r\n" +
+            "实测推理速度几乎没有差别。");
+        p.Controls.Add(_cudaCombo);
+
+        var note = new Label
+        {
+            Text = "启动时如果检测到 CUDA 图构建失败，程序会自动关掉它并记住这个设置。\r\n"
+                 + "也就是说：遇到驱动不兼容时你什么都不用做；这一页只用于手动改回来。",
+            AutoSize = false, Location = new Point(0, S(160)), Size = new Size(S(520), S(64)),
+            AutoEllipsis = false,
+            Font = UiFont(9F), ForeColor = C.Dim, BackColor = C.Bg
+        };
+        p.Controls.Add(note);
+
+        _cudaState = new Label
+        {
+            AutoSize = false, Location = new Point(0, S(238)), Size = new Size(S(520), S(24)),
+            Font = UiFont(10F), ForeColor = C.Fg, BackColor = C.Bg
+        };
+        p.Controls.Add(_cudaState);
+
+        p.Resize += delegate
+        {
+            int w = p.ClientSize.Width - S(14);
+            if (w < S(260)) w = S(520);
+            _cudaCombo.Width = w;
+            note.Width = w;
+            _cudaState.Width = w;
+        };
+        return p;
+    }
+
+    /// 把「引擎兼容」页的控件状态同步到当前配置（切页时调用）。
+    private void RefreshEngineCompatRows()
+    {
+        var cfg = LaunchConfig.Load(Root);
+        if (_cudaCombo != null && !_cudaCombo.IsDisposed)
+        {
+            int want = cfg.NoCudaGraph ? 1 : 0;
+            if (_cudaCombo.Selected != want) { _cudaCombo.Selected = want; _cudaCombo.Invalidate(); }
+        }
+        if (_cudaState != null && !_cudaState.IsDisposed)
+        {
+            _cudaState.Text = cfg.NoCudaGraph
+                ? "当前状态：已关闭 —— 引擎不带 --cuda-graph-allowance-mib 参数"
+                : "当前状态：开启 —— 图态预留 " + cfg.GraphAllowanceMiB + " MiB";
+            _cudaState.ForeColor = cfg.NoCudaGraph ? C.Amber : C.Dim;
+        }
     }
 
     // ---------- 三级：关于 ----------
@@ -2701,7 +2938,7 @@ internal sealed class BonsaiTray : ApplicationContext
         // ---- 2) 程序 ----
         var cApp = MakeAboutCard(y, w, S(214));
         cApp.Controls.Add(AboutTitle("程序"));
-        AddAboutRow(cApp, 0, "名称", "Local Models —— 完全离线运行");
+        AddAboutRow(cApp, 0, "名称", AppInfo.Product + " —— " + AppInfo.ProductFull + "，完全离线运行");
         AddAboutRow(cApp, 1, "引擎", EngineExeName);
         AddAboutRow(cApp, 2, "模型", AboutModelName());
         AddAboutRow(cApp, 3, "服务", "引擎 " + EnginePort + " · 网页 " + WebPort);
@@ -2763,12 +3000,24 @@ internal sealed class BonsaiTray : ApplicationContext
         // ---- 5) 声明 ----
         var cDecl = MakeAboutCard(y, w, S(140));
         cDecl.Controls.Add(AboutTitle("声明"));
-        cDecl.Controls.Add(new Label
+        var lblDecl = new Label
         {
             Text = "本程序所有代码(除引擎)及图形UI由Deepseek Harness V4.1Flash编写",
             AutoSize = false, Location = new Point(S(16), S(40)), Size = new Size(S(480), S(30)),
+            AutoEllipsis = false,   // 允许换行，窄窗口才不会被截断
             Font = UiFont(10.5F), ForeColor = C.Fg, BackColor = C.Card
-        });
+        };
+        cDecl.Controls.Add(lblDecl);
+        cDecl.SizeChanged += delegate
+        {
+            try
+            {
+                int avail = cDecl.Width - S(16) * 2;
+                if (avail < S(80)) avail = S(80);
+                lblDecl.Width = avail;
+            }
+            catch { }
+        };
         AddAboutNote(cDecl, 78,
             "免责：本启动器基于上游 Apache-2.0 项目打包，上游未对其背书。", 40);
         cards.Add(cDecl);
@@ -3031,13 +3280,29 @@ internal sealed class BonsaiTray : ApplicationContext
     /// 「关于」页里的多行说明块（自动换行）
     private void AddAboutNote(W11Card card, int top, string text, int height)
     {
-        card.Controls.Add(new Label
+        var lbl = new Label
         {
             Text = text, AutoSize = false,
             Location = new Point(W11.S(16), W11.S(top)),
             Size = new Size(W11.S(472), W11.S(height)),
+            // ★ 必须让 Label 自己换行，否则窄窗口下长文本会被直接截掉
+            //   （AutoEllipsis=false + 足够的高度 = 正常折行显示）
+            AutoEllipsis = false,
             Font = UiFont(9F), ForeColor = C.Dim, BackColor = C.Card
-        });
+        };
+        card.Controls.Add(lbl);
+
+        // 卡片宽度变化时同步标签宽度 —— 否则窄窗口下右边一截看不到
+        card.SizeChanged += delegate
+        {
+            try
+            {
+                int avail = card.Width - W11.S(16) * 2;
+                if (avail < W11.S(80)) avail = W11.S(80);
+                lbl.Width = avail;
+            }
+            catch { }
+        };
     }
 
     /// 「关于」页里各卡片的小标题
@@ -3065,12 +3330,28 @@ internal sealed class BonsaiTray : ApplicationContext
         var v = new TextBox
         {
             Text = val, ReadOnly = true, BorderStyle = BorderStyle.None,
-            Location = new Point(W11.S(84), y + W11.S(2)), Width = W11.S(400), Height = W11.S(20),
+            Location = new Point(W11.S(84), y + W11.S(2)),
+            // ★ 宽度先给个初值，稍后由 FitAboutRow 按卡片实际宽度校正。
+            //   原来写死 400 —— 窗口拉宽时字不会变宽（浪费空间），
+            //   窗口缩窄时又溢出（文字被截断）。
+            Width = W11.S(400), Height = W11.S(20),
             BackColor = C.Card, ForeColor = C.Fg, Font = UiFont(10F),
             TabStop = false, WordWrap = false, ShortcutsEnabled = true
         };
         card.Controls.Add(k);
         card.Controls.Add(v);
+
+        // 卡片尺寸变化时同步调整 —— 让文字框吃掉剩余宽度
+        card.SizeChanged += delegate
+        {
+            try
+            {
+                int avail = card.Width - W11.S(84) - W11.S(16);
+                if (avail < W11.S(80)) avail = W11.S(80);
+                v.Width = avail;
+            }
+            catch { }
+        };
     }
 
     private static string AboutModelName()
@@ -3395,26 +3676,53 @@ internal sealed class BonsaiTray : ApplicationContext
         return false;
     }
 
+    /// 引擎日志里有没有出现过指定文本（大小写不敏感）。
+    /// 只用来判断"这次失败是不是某个已知原因"，所以只需要布尔结果。
+    private static bool LogHasText(string logPath, string needle)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(needle)) return false;
+            string[] lines = ReadLogLines(logPath);
+            for (int i = lines.Length - 1; i >= 0; i--)
+                if (lines[i].IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+        }
+        catch { }
+        return false;
+    }
+
     /// 启动引擎并等它就绪；显存不足时**自动下调设备池重试**。
     ///
     /// 为什么要重试：设备池是安装时按「显卡总显存」定的档，
     /// 但真正能不能装下取决于**当下可用的显存** ——
     /// 用户开着浏览器、播放器、其它占显存的程序时，可用量会小很多。
     /// 与其直接失败让用户去猜，不如按引擎报出的实际可用量算一个装得下的值再试。
+    ///
+    /// 另一个重试方向是 **CUDA 图**：
+    ///   驱动升级后（实测 NVIDIA 621.14）图的可执行体更新会失败，引擎直接 FATAL：
+    ///     CUDA Graph executable update failed: cudaErrorGraphExecUpdateFailure (update result 5)
+    ///   这时只要加 --no-cuda-graph 就能正常启动，速度代价约等于 0。
+    ///   所以检测到这个错误就自动关图重试，并把选择写回 launch-config.json。
     private bool StartEngineWithRetry(string exePath, string exeName, string modelPath,
                                       string modelId, string engineLog)
     {
         var cfg = LaunchConfig.Load(Root);
         int kv = cfg.KvCapacity > 0 ? cfg.KvCapacity : 4032;
         int graph = cfg.GraphAllowanceMiB;
+        bool noGraph = cfg.NoCudaGraph;
+
+        if (noGraph)
+            Log("本机已记录「禁用 CUDA 图」（上次因驱动不兼容自动切换，可在设置里恢复）");
 
         for (int attempt = 1; attempt <= 4; attempt++)
         {
-            Log("启动引擎 " + exeName + "（设备池 " + kv + " token，图态预留 " + graph + " MiB）");
+            Log("启动引擎 " + exeName + "（设备池 " + kv + " token，图态预留 " + graph + " MiB"
+                + (noGraph ? "，CUDA 图已关闭" : "") + "）");
 
             var a = new List<string>();
             a.Add(modelPath);
-            a.AddRange(EngineArgsFor(modelId, kv, graph));
+            a.AddRange(EngineArgsFor(modelId, kv, graph, noGraph));
             lock (_gate)
                 _engine = StartHidden(exePath, a, EngineDir, engineLog, out _engineLogWriter);
 
@@ -3426,6 +3734,28 @@ internal sealed class BonsaiTray : ApplicationContext
             {
                 Log("引擎进程仍在运行，但未在时限内就绪");
                 return false;
+            }
+
+            // ---- ① CUDA 图失败 → 关图重试 ----
+            // 驱动升级后最常见的启动失败原因（update result 5 = ParametersChanged）。
+            if (!noGraph && LogHasText(engineLog, "GraphExecUpdateFailure"))
+            {
+                Log("");
+                Log("检测到 CUDA 图构建失败（cudaErrorGraphExecUpdateFailure）。");
+                Log("这通常是**显卡驱动版本**与引擎不兼容导致的 —— 不是显存或配置问题。");
+                Log("改用 --no-cuda-graph 重试（实测推理速度代价约 0），并把该设置记住。");
+
+                noGraph = true;
+                try
+                {
+                    if (LaunchConfig.SaveNoCudaGraph(Root, true))
+                        Log("已写入 launch-config.json（noCudaGraph = true），以后启动直接用这个模式");
+                }
+                catch { }
+
+                KillOwned();
+                Thread.Sleep(1500);
+                continue;
             }
 
             long need, avail;
@@ -3521,7 +3851,7 @@ internal sealed class BonsaiTray : ApplicationContext
         _miOpen.Enabled = !_busy && loaded;
         _miExit.Enabled = !_busy;
         _miStatus.Text = _busy ? "处理中…" : (loaded ? "已载入" : "未载入");
-        _tray.Text = "Local Models · " + (loaded ? "已载入" : "未载入");
+        _tray.Text = AppInfo.Product + " · " + (loaded ? "已载入" : "未载入");
 
         if (_btnLoad != null && !_btnLoad.IsDisposed) _btnLoad.Enabled = !_busy && !loaded;
         if (_btnUnload != null && !_btnUnload.IsDisposed) _btnUnload.Enabled = !_busy && loaded;
@@ -3563,7 +3893,25 @@ internal sealed class BonsaiTray : ApplicationContext
             try
             {
                 Log("开始载入模型…");
-                Balloon(3000, "Local Models", "正在载入模型…", ToolTipIcon.Info);
+                Balloon(3000, AppInfo.Product, "正在载入模型…", ToolTipIcon.Info);
+
+                // ★ 载入前先检查「环绕窗口 vs 设备池」。
+                //   窗口设太大不会导致启动失败，而是**长对话时才崩**，
+                //   而且引擎只通过 HTTP 返回错误、不写日志 —— 用户根本查不到原因。
+                //   所以在这里主动告警一次。
+                try
+                {
+                    var kcfg = LaunchConfig.Load(Root);
+                    string winWarn = Kvmem.CheckWindow(Kvmem.Window, kcfg.KvCapacity);
+                    if (winWarn.Length > 0)
+                    {
+                        Log("");
+                        foreach (string ln in winWarn.Split('\n'))
+                            Log(ln.TrimEnd('\r'));
+                        Log("");
+                    }
+                }
+                catch { }
 
                 string engineLog = Path.Combine(DataDir, "engine.log");
 
@@ -3573,7 +3921,7 @@ internal sealed class BonsaiTray : ApplicationContext
                 {
                     _busy = false;
                     Log("未找到模型文件，请把 .ninfer 放进 " + ModelDir);
-                    Balloon(8000, "Local Models 载入失败",
+                    Balloon(8000, AppInfo.Product + " 载入失败",
                         "找不到模型文件。\n\n请把 .ninfer 模型放进：\n" + ModelDir, ToolTipIcon.Warning);
                     RefreshMenu(); return;
                 }
@@ -3588,7 +3936,7 @@ internal sealed class BonsaiTray : ApplicationContext
                     {
                         _busy = false;
                         Log("引擎缺失：" + exePath);
-                        Balloon(6000, "Local Models 载入失败",
+                        Balloon(6000, AppInfo.Product + " 载入失败",
                             "引擎文件不存在：\n" + exePath, ToolTipIcon.Warning);
                         RefreshMenu(); return;
                     }
@@ -3603,7 +3951,7 @@ internal sealed class BonsaiTray : ApplicationContext
                         Log("引擎未就绪");
                         string last = LastLogLine(engineLog);
                         if (last.Length > 0) Log("引擎最后一行输出：" + last);
-                        Balloon(9000, "Local Models 载入失败",
+                        Balloon(9000, AppInfo.Product + " 载入失败",
                             "引擎启动失败。\n\n详见日志：\n" + engineLog, ToolTipIcon.Warning);
                         RefreshMenu(); return;
                     }
@@ -3672,12 +4020,12 @@ internal sealed class BonsaiTray : ApplicationContext
                 {
                     Log("载入成功");
                     Log("局域网访问：http://" + LanIp() + ":" + WebPort);
-                    Balloon(4000, "Local Models 载入成功", "模型已就绪。点「打开模型」开始使用。", ToolTipIcon.Info);
+                    Balloon(4000, AppInfo.Product + " 载入成功", "模型已就绪。点「打开模型」开始使用。", ToolTipIcon.Info);
                 }
                 else
                 {
                     Log("载入失败：网页未就绪");
-                    Balloon(5000, "Local Models 载入失败",
+                    Balloon(5000, AppInfo.Product + " 载入失败",
                         "网页服务未就绪。\n日志：" + engineLog, ToolTipIcon.Warning);
                 }
                 RefreshMenu();
@@ -3685,7 +4033,7 @@ internal sealed class BonsaiTray : ApplicationContext
             catch (Exception ex)
             {
                 _busy = false; Log("载入出错：" + ex.Message);
-                Balloon(5000, "Local Models 载入出错", ex.Message, ToolTipIcon.Error);
+                Balloon(5000, AppInfo.Product + " 载入出错", ex.Message, ToolTipIcon.Error);
                 RefreshMenu();
             }
         });
@@ -3837,7 +4185,7 @@ internal sealed class BonsaiTray : ApplicationContext
             //   所以端口确认关闭之后，作废缓存再报"已卸载"、再刷新界面。
             InvalidateReady();
             Log("已卸载");
-            Balloon(2500, "Local Models", "模型已卸载，启动器仍在托盘运行。", ToolTipIcon.Info);
+            Balloon(2500, AppInfo.Product, "模型已卸载，启动器仍在托盘运行。", ToolTipIcon.Info);
             RefreshMenu();
         });
         t.IsBackground = true; t.Start();
@@ -3908,11 +4256,11 @@ internal sealed class BonsaiTray : ApplicationContext
     {
         if (!IsLoaded())
         {
-            Balloon(3000, "Local Models", "模型尚未载入，请先点「载入模型」。", ToolTipIcon.Warning);
+            Balloon(3000, AppInfo.Product, "模型尚未载入，请先点「载入模型」。", ToolTipIcon.Warning);
             return;
         }
         try { Process.Start(new ProcessStartInfo(WebUrl) { UseShellExecute = true }); }
-        catch (Exception ex) { Balloon(3000, "Local Models", "打不开浏览器：" + ex.Message, ToolTipIcon.Error); }
+        catch (Exception ex) { Balloon(3000, AppInfo.Product, "打不开浏览器：" + ex.Message, ToolTipIcon.Error); }
     }
 
     /// 打开窗口并直接定位到「设置 → 关于」。

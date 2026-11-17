@@ -46,7 +46,7 @@ internal sealed class UpdaterForm : Form
         // 看安装目录里装了哪个架构的引擎 —— 决定要不要更新引擎
         _engineArch = DetectInstalledArch();
 
-        Text = "Local Models 更新程序 " + newVer;
+        Text = AppInfo.Product + " 更新程序 " + newVer;
         ClientSize = new Size(S(600), S(450));
         MinimumSize = new Size(S(560), S(430));
         StartPosition = FormStartPosition.CenterScreen;
@@ -115,7 +115,7 @@ internal sealed class UpdaterForm : Form
         var head = new Panel { Dock = DockStyle.Top, Height = S(96), BackColor = Panel2 };
         head.Controls.Add(new Label
         {
-            Text = "Local Models 更新程序",
+            Text = AppInfo.Product + " 更新程序",
             Font = new Font("Microsoft YaHei UI", 16F, FontStyle.Bold),
             ForeColor = Fg, AutoSize = true, BackColor = Panel2,
             Location = new Point(S(26), S(18))
@@ -351,6 +351,34 @@ internal sealed class UpdaterForm : Form
                         File.WriteAllBytes(dst, data);
                         Log("✓ " + rel + "  (" + (data.Length / 1024) + " KB)");
                     }
+
+                    // ---- 删掉改名遗留的旧 exe ----
+                    // ★ 不做这一步，目录里会同时有：
+                    //     Local Models.exe（旧，桌面快捷方式还指着它）
+                    //     LLLM Studio.exe  （新，刚写进去的）
+                    //   用户双击旧的，看到的还是老界面，以为更新没生效。
+                    //   必须在**新文件已经就位**之后才删。
+                    foreach (string oldName in UpdaterCore.ObsoleteFiles)
+                    {
+                        try
+                        {
+                            string newPath = Path.Combine(_dir, AppInfo.LauncherExe);
+                            string oldPath = Path.Combine(_dir, oldName);
+                            if (File.Exists(newPath) && File.Exists(oldPath))
+                            {
+                                File.Delete(oldPath);
+                                Log("✓ 已删除旧启动器 " + oldName + "（改名遗留）");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log("⚠ 删不掉旧文件 " + oldName + "：" + ex.Message);
+                            Log("  可以手动删除 " + Path.Combine(_dir, oldName));
+                        }
+                    }
+
+                    // 快捷方式也要跟着更新 —— 改名后旧 lnk 指向的 exe 已经没了
+                    UpdaterCore.FixShortcuts(_dir, new Action<string>(Log));
                 }
 
                 // ---- 引擎更新 ----
@@ -395,7 +423,7 @@ internal sealed class UpdaterForm : Form
                     SetStatus("更新失败", Err);
                     Log("");
                     Log("更新没有完成。程序文件可能被占用，或没有写入权限。");
-                    Log("可以试试：关掉 Local Models 后重试，或以管理员身份运行本更新程序。");
+                    Log("可以试试：关掉 " + AppInfo.Product + " 后重试，或以管理员身份运行本更新程序。");
                     _go.Enabled = true;
                     _go.Text = "重试";
                     _close.Enabled = true;
@@ -411,7 +439,7 @@ internal sealed class UpdaterForm : Form
     {
         try
         {
-            string exe = Path.Combine(_dir, "Local Models.exe");
+            string exe = UpdaterCore.LauncherPath(_dir);
             if (File.Exists(exe))
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe)
                 {

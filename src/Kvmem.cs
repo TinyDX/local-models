@@ -90,6 +90,85 @@ internal static class Kvmem
         return Math.Round(mib, 0);
     }
 
+    /// 每页多少 token。
+    ///
+    /// 引擎日志实测（2026-10-20，RTX 4070 Ti Super）：
+    ///   capacity | KV 17,920 tokens, k8v4 | pages 280/4,096
+    ///   → 17,920 / 280 = 64 token/页
+    /// 上游 profiles.json 里也写着 "page_tokens": 64 —— 跨显卡固定。
+    public const int TokensPerPage = 64;
+
+    /// 环形窗口需要多少页
+    public static int PagesFor(int windowTokens)
+    {
+        if (windowTokens <= 0) return 0;
+        return (windowTokens + TokensPerPage - 1) / TokensPerPage;
+    }
+
+    /// 设备池有多少页
+    public static int DevicePoolPages(int kvCapacityTokens)
+    {
+        if (kvCapacityTokens <= 0) return 0;
+        return (kvCapacityTokens + TokensPerPage - 1) / TokensPerPage;
+    }
+
+    /// 检查「环绕窗口 vs 设备池」是否合理。
+    ///
+    /// ★ 先说清楚一个前提：
+    ///   环形窗口**本来就该大于设备池** —— 它的作用就是把装不下的历史
+    ///   换出到主机池、需要时再取回。窗口 ≤ 池子的话根本不需要环。
+    ///   所以「窗口比池子大」是正常设计，不能当错误报。
+    ///
+    /// 真正会出事的情况：**窗口大得让引擎预留页数远超池子容量**，
+    /// 长对话时换页周转不过来，报：
+    ///   context cache exhausted: Paged KV pool has no free page for host-restore
+    ///   usable 280 (capacity 280, lent 0), allocated 280, reserved 1971
+    ///
+    /// 实测（2026-10-20，RTX 4070 Ti Super，池子 17,920 token = 280 页）：
+    ///   窗口 16384（256 页，0.9×池子）→ 引擎 reserved 692 页，**报过错**
+    ///   窗口 65536（1024 页，3.7×池子）→ 引擎 reserved 1971 页，报过错
+    ///   → 这个用户即使 16384 也踩了，因为他的 prompt 有 15 万 token。
+    ///     窗口只是**次要因素**，主因是 prompt 长度。
+    ///
+    /// 所以判据用 **4 倍**：
+    ///   只提醒"窗口相对池子大得离谱"的配置（本该配磁盘 KV 的场景），
+    ///   默认档位（16384 / 8192）一律不打扰 —— 天天弹警告等于没警告。
+    ///
+    /// 返回给用户看的提示文字（空串 = 没问题）。
+    public static string CheckWindow(int windowTokens, int kvCapacityTokens)
+    {
+        if (windowTokens <= 0 || kvCapacityTokens <= 0) return "";
+
+        int winPages = PagesFor(windowTokens);
+        int poolPages = DevicePoolPages(kvCapacityTokens);
+        if (poolPages <= 0) return "";
+
+        // 4 倍以内视为正常（环形缓存的设计本意）
+        double ratio = (double)winPages / poolPages;
+        if (ratio <= 4.0) return "";
+
+        string s = "⚠ 环绕窗口 " + windowTokens.ToString("N0") + " token（约 "
+                 + winPages.ToString("N0") + " 页）是设备池（"
+                 + kvCapacityTokens.ToString("N0") + " token，"
+                 + poolPages.ToString("N0") + " 页）的 "
+                 + ratio.ToString("0.0") + " 倍，偏大。\r\n"
+                 + "  长对话（尤其带工具的多轮对话）可能报「context cache exhausted」，\r\n"
+                 + "  且超出设备池的部分内容会被静默丢弃。\r\n"
+                 + "  建议：";
+
+        if (poolPages >= 128)
+        {
+            int suggest = (kvCapacityTokens / 1024) * 1024;
+            if (suggest < 1024) suggest = 1024;
+            s += "降到 " + suggest.ToString("N0") + " token 以内，或开启「磁盘 KV 缓存」。";
+        }
+        else
+        {
+            s += "开启「磁盘 KV 缓存」（设置 → 磁盘 KV 缓存），或缩短对话、少挂 tools。";
+        }
+        return s;
+    }
+
     public static string FilePath(string root)
     {
         return Path.Combine(root, "KVMem.json");

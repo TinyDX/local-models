@@ -162,7 +162,11 @@ internal sealed class WebHost
     }
 
     /// 本程序创建的防火墙规则名（用独立名字，不去动别人建的规则）
-    private const string FwRuleName = "Local Models Web (all networks)";
+    ///
+    /// 新旧两个名字都留着 —— 老用户机器上已有旧名字的规则，
+    /// 新版要能识别并清掉，否则会在防火墙里越堆越多。
+    private const string FwRuleName = AppInfo.Product + " Web (all networks)";
+    private const string FwRuleNameLegacy = AppInfo.LegacyProduct + " Web (all networks)";
 
     /// 放行状态，供界面/日志显示
     public string FirewallNote = "";

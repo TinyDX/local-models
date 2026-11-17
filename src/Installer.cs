@@ -1,4 +1,4 @@
-// Installer.cs -- 引擎包安装器（Local Models）
+﻿// Installer.cs -- 引擎包安装器（Local Models）
 //
 // 修复的核心 bug（原安装器只复制 payload\engine\，导致安装目录下没有启动器/webui/许可）：
 //   · 现在按 payload 的**整棵目录树**释放到安装目录
@@ -323,7 +323,7 @@ internal sealed class InstallerForm : Form
         catch { }
 
         // 标题栏和页头都带上版本号 —— 版本号唯一来源是 Version.cs
-        Text = "Local Models 引擎包 · 安装程序 " + AppInfo.Version;
+        Text = AppInfo.Product + " 引擎包 · 安装程序 " + AppInfo.Version;
         ClientSize = new Size(Sx(760), Sx(560));
         MinimumSize = new Size(Sx(700), Sx(520));
         StartPosition = FormStartPosition.CenterScreen;
@@ -339,13 +339,13 @@ internal sealed class InstallerForm : Form
         // ninfer-serve-*.exe），按 Windows 惯例就该放 Program Files，
         // 而不是 Program Files (x86)。
         Ctx.TargetDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Local Models");
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), AppInfo.Product);
 
         // 顶部标题
         var head = new Panel { Dock = DockStyle.Top, Height = Sx(86), BackColor = P.Header };
         head.Controls.Add(new Label
         {
-            Text = "Local Models 引擎包  " + AppInfo.Version,
+            Text = AppInfo.Product + " 引擎包  " + AppInfo.Version,
             Font = FontOf(16f, FontStyle.Bold), ForeColor = P.Fg, AutoSize = true,
             Location = new Point(Sx(24), Sx(16)), BackColor = P.Header
         });
@@ -576,7 +576,7 @@ internal sealed class InstallerForm : Form
         _closingDone = true;
         try
         {
-            string exe = Path.Combine(Ctx.TargetDir, "Local Models.exe");
+            string exe = Path.Combine(Ctx.TargetDir, AppInfo.LauncherExe);
             if (File.Exists(exe))
                 Process.Start(new ProcessStartInfo(exe)
                 {
@@ -856,7 +856,7 @@ internal sealed class InstallerForm : Form
         _treeLabel.Text =
             "安装后目录结构：\r\n" +
             "  " + d + "\\\r\n" +
-            "    ├─ Local Models.exe     启动器（双击即用）\r\n" +
+            "    ├─ " + AppInfo.LauncherExe + "     启动器（双击即用）\r\n" +
             "    ├─ engine\\             引擎（只含本机匹配的那一档）\r\n" +
             "    ├─ models\\             放你的 .ninfer 模型\r\n" +
             "    ├─ webui\\              网页界面\r\n" +
@@ -1408,13 +1408,13 @@ internal sealed class InstallerForm : Form
                 if (Ctx.TargetDir.Length == 0 || !Path.IsPathRooted(Ctx.TargetDir))
                 {
                     Log("❌ 安装路径无效：" + (_dirBox.Text ?? "(空)"));
-                    Log("   必须是绝对路径，例如 D:\\Apps\\Local Models");
+                    Log("   必须是绝对路径，例如 D:\\Apps\\" + AppInfo.Product);
                     ok = false;
                     _installing = false;
                     BeginInvoke(new Action(() => MessageBox.Show(
                         "安装路径无效：\r\n" + (_dirBox.Text ?? "(空)") +
                         "\r\n\r\n请填一个绝对路径，例如 D:\\Apps",
-                        "Local Models 安装程序", MessageBoxButtons.OK, MessageBoxIcon.Error)));
+                        AppInfo.Product + " 安装程序", MessageBoxButtons.OK, MessageBoxIcon.Error)));
                     return;
                 }
 
@@ -1495,10 +1495,10 @@ internal sealed class InstallerForm : Form
         var lbl = Para(
             "安装完成。\r\n\r\n" +
             "安装目录：" + Ctx.TargetDir + "\r\n\r\n" +
-            "启动方式：双击桌面的 Local Models 快捷方式，或从开始菜单打开。\r\n\r\n" +
+            "启动方式：双击桌面的 " + AppInfo.Product + " 快捷方式，或从开始菜单打开。\r\n\r\n" +
             "首次使用：把 .ninfer 模型文件放进安装目录的 models\\ 文件夹，" +
             "然后点启动器窗口里的「载入模型」。\r\n\r\n" +
-            "卸载：可从「设置 → 应用」里找到 Local Models 点击卸载，" +
+            "卸载：可从「设置 → 应用」里找到 " + AppInfo.Product + " 点击卸载，" +
             "或运行安装目录里的 Uninstall.exe。");
         lbl.Height = Sx(260);
 
@@ -1531,7 +1531,7 @@ internal sealed class InstallerForm : Form
     {
         if (_installing && !_closingDone)
         {
-            var r = MessageBox.Show("安装正在进行，确定要退出吗？", "Local Models 安装程序",
+            var r = MessageBox.Show("安装正在进行，确定要退出吗？", AppInfo.Product + " 安装程序",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
             if (r != DialogResult.Yes) { e.Cancel = true; return; }
         }
@@ -1567,12 +1567,12 @@ internal static class InstallPaths
         if (leaf.Length == 0)
         {
             if (trimmed.Length == 0) return t;
-            return trimmed + "\\Local Models";
+            return trimmed + "\\" + AppInfo.Product;
         }
 
-        if (string.Equals(leaf, "Local Models", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(leaf, AppInfo.Product, StringComparison.OrdinalIgnoreCase))
             return trimmed;
-        return System.IO.Path.Combine(trimmed, "Local Models");
+        return System.IO.Path.Combine(trimmed, AppInfo.Product);
     }
 }
 
@@ -1600,7 +1600,7 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        // 静默安装：Bonsai2-Setup.exe /silent [/dir "目标目录"] [/kit "引擎包.zip"]
+        // 静默安装：LLLM-Studio-Setup.exe /silent [/dir "目标目录"] [/kit "引擎包.zip"]
         // 用于批量部署与自动验证，不弹任何界面。
         //
         // /kit 指向已经下好的引擎包。新的分发方式里安装器只带程序本体，
@@ -1645,7 +1645,7 @@ internal static class Program
             ctx.TargetDir = target.Length > 0
                 ? InstallPaths.EnsureAppFolder(target)
                 : Path.Combine(Environment.GetFolderPath(
-                    Environment.SpecialFolder.ProgramFiles), "Local Models");
+                    Environment.SpecialFolder.ProgramFiles), AppInfo.Product);
 
             string exeDir = Path.GetDirectoryName(System.Windows.Forms.Application.ExecutablePath);
 
